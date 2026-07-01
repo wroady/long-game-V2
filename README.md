@@ -71,6 +71,51 @@ break under ES-module strict mode. Fixed with no behavior change:
 2. `scheduleDay`'s 3:30 PM snack reminder had lost its `if(...)` guard (malformed braces).
 3. `CI` (weekly check-in draft) was never declared — would throw `ReferenceError` on the Check-In tab.
 
+## Plan import (Claude → app)
+
+The plan (targets, meals, supplements, workouts, dinner rotation) resolves **per week**:
+frozen snapshot → `activePlan` (latest import/edit) + auto-progression → built-in code defaults.
+With no import, the app behaves as the week-1 baseline. Auto-progression handles the known schedule:
+uncapped program week, water ramp (`min(120, 80 + (week-1)*10)` → 80/90/100/110/120), and supplement
+phase-in by `introWeek`. **History is frozen** — each week snapshots the plan in effect on first save.
+
+To update a week, paste a plan JSON into **Check-In → Import a plan** → Validate → Apply.
+
+### Import JSON format (`tlgPlan: 1`)
+
+All top-level sections are optional; omitted sections carry forward from the current plan.
+
+```jsonc
+{
+  "tlgPlan": 1,                       // required version sentinel
+  "targetWeek": "next",               // "next" (default) | "current" | "YYYY-MM-DD" (a Sunday)
+  "note": "Week 3 — add berberine, bump squats",
+  "targets": { "cal":1850, "calMin":1750, "calMax":1950, "prot":165, "water":120 },
+  "supplements": [
+    { "id":"berberine-l", "label":"Berberine — 500mg", "time":"12:30 PM", "introWeek":3 }
+  ],
+  "workouts": {                       // omit a weekday to carry it forward
+    "Mon": { "title":"TRX full body + evening bike", "evening":"35 min zone 2 bike",
+      "exercises": [
+        { "id":"kb-deadlift", "name":"KB Deadlift", "sets":3, "reps":"15", "rest":45,
+          "type":"strength", "cue":"Hip hinge — chest tall", "weight":"25 lb KB" }
+      ] }
+  },
+  "dinnerPlan": { "Mon":"chicken_baked", "Fri":"cod_lemon" }   // recipe ids must exist in RECIPES
+}
+```
+
+Rules: weekday keys are `Mon`..`Sun`; `weight`/`reps` are free-text strings; supplement `introWeek`
+gates when a supp appears; `time` is `"8:05 AM"` format (the app derives minute offsets). Setting
+`targets.water` pins water (stops the auto-ramp). Importing for `"current"` overwrites the live
+week's plan overlay — your logged data is untouched. Unknown fields are ignored (forward-compatible).
+
+### Prompt template for Claude
+
+> Produce a `tlgPlan: 1` JSON for The Long Game for **week N** targeting `"next"`. Include only what
+> changes from last week. Use existing supplement ids and recipe ids where possible. Weekday keys
+> Mon–Sun; weights/reps as strings; times like "8:05 AM". Output only the JSON.
+
 ## Data schema (adopted from live Supabase — canonical)
 
 The live Supabase row (`app_sync`, user `rodney`) is the source of truth, and this code was adapted

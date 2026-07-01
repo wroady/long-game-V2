@@ -210,7 +210,7 @@ async function cloudPush(state){
 }
 // Build the canonical live-schema object to persist (drops runtime-only fields like planWeek/UI).
 function serializeState(){
-  return {days:APP.days,weeks:APP.weeks,checkIns:APP.checkIns,groceryState:APP.groceryState,planStartDate:APP.planStartDate,updatedAt:APP.updatedAt};
+  return {days:APP.days,weeks:APP.weeks,checkIns:APP.checkIns,groceryState:APP.groceryState,planStartDate:APP.planStartDate,planWeeks:APP.planWeeks,activePlan:APP.activePlan,updatedAt:APP.updatedAt};
 }
 async function cloudPull(){
   try{var r=await fetch(SUPABASE_URL+"/rest/v1/app_sync?user_id=eq.rodney&select=state,updated_at",{headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY}});var rows=await r.json();if(rows&&rows.length)return{state:rows[0].state,ts:rows[0].updated_at};}
@@ -225,6 +225,7 @@ async function loadBest(){
   return new Date(cloud.ts)>new Date(local.updatedAt||0)?cloud.state:local;
 }
 async function saveAll(){
+  freezeCurrentWeekIfNeeded(); // stamp the plan in effect for this week before persisting
   APP.updatedAt=new Date().toISOString();
   var state=serializeState();
   lsSet("tlg",state);
@@ -242,7 +243,7 @@ async function scheduleDay(){
   var today=todayKey();
   if(lsGet("tlg-ntfy")===today)return;
   var now=new Date(),nm=nowMin();
-  var active=SUPPS.filter(function(s){return s.week<=APP.planWeek;});
+  var active=curPlan().supplements; // already phase-filtered by the resolver
   active.forEach(function(s){
     if(APP.days[today]&&APP.days[today].supplements&&APP.days[today].supplements[s.id])return;
     if(s.tMin<=nm)return;
@@ -278,6 +279,7 @@ async function scheduleDay(){
 var APP={
   days:{},weeks:{},checkIns:{},groceryState:null,
   planStartDate:todayKey(),planWeek:1,
+  planWeeks:{},activePlan:null,
   updatedAt:null
 };
 var UI={tab:"today",snackDismissed:{},breakfastDismissed:{},lunchDismissed:{},acceptedSug:{}};
@@ -287,6 +289,151 @@ function computePlanWeek(){
   var start=new Date(APP.planStartDate);
   var days=Math.floor((new Date()-start)/(86400000));
   return Math.min(4,Math.max(1,Math.floor(days/7)+1));
+}
+
+// ── PLAN MODEL ────────────────────────────────────────────────────────────────
+// The plan (targets, meals, supplements, workouts, dinner rotation) resolves per week:
+//   frozen snapshot (history)  →  activePlan (latest import/edit) + auto-progression  →  code defaults.
+// The hardcoded constants remain the built-in default plan; nothing is deleted.
+var initSynced=false; // freezing is gated until the initial cloud sync settles (avoids stale freezes)
+
+function deepClone(o){return JSON.parse(JSON.stringify(o));}
+function parseTime(str){
+  if(typeof str!=="string")return 0;
+  var m=str.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if(!m)return 0;
+  var h=parseInt(m[1],10),mn=parseInt(m[2],10),ap=m[3]?m[3].toUpperCase():null;
+  if(ap==="PM"&&h!==12)h+=12;
+  if(ap==="AM"&&h===12)h=0;
+  return h*60+mn;
+}
+function weekStartOf(dateStr){var d=new Date(dateStr+"T00:00:00Z");d.setUTCDate(d.getUTCDate()-d.getUTCDay());return d.toISOString().slice(0,10);}
+function nextSundayKey(){var d=new Date();d.setDate(d.getDate()-d.getDay()+7);return d.toISOString().slice(0,10);}
+
+// Uncapped program-week number (1,2,3,…) for a given week-Sunday key, measured from planStartDate's week.
+function programWeek(wk){
+  var startSunday=weekStartOf(APP.planStartDate);
+  var ms=Date.parse((wk||weekKey())+"T00:00:00Z")-Date.parse(startSunday+"T00:00:00Z");
+  return Math.max(1,Math.round(ms/(7*86400000))+1);
+}
+function waterForWeek(pw){return Math.min(120,80+(Math.max(1,pw)-1)*10);}
+
+// Built-in default plan, assembled from the hardcoded constants (the week-1 baseline).
+function DEFAULT_PLAN(){
+  return {
+    schemaVersion:1,
+    meta:{source:"default"},
+    targets:{cal:TARGETS.cal,calMin:TARGETS.calMin,calMax:TARGETS.calMax,prot:TARGETS.prot,water:TARGETS.water},
+    meals:MEALS.map(function(m){return {id:m.id,label:m.label,time:m.time,tMin:m.tMin,cal:m.cal,prot:m.prot};}),
+    supplements:SUPPS.map(function(s){return {id:s.id,label:s.label,time:s.time,tMin:s.tMin,introWeek:s.week};}),
+    workouts:deepClone(WORKOUTS),
+    dinnerPlan:Object.assign({},DEFAULT_DINNER_PLAN)
+  };
+}
+
+// Apply auto-progression (water ramp, supplement phase-in) to a base plan for a given week.
+function applyProgression(base,wk){
+  var pw=programWeek(wk);
+  var plan=deepClone(base);
+  plan.meta=plan.meta||{};
+  if(!plan.meta.waterPinned)plan.targets.water=waterForWeek(pw);
+  plan.supplements=(plan.supplements||[]).filter(function(s){return (s.introWeek||1)<=pw;});
+  return plan;
+}
+
+// Resolve the effective plan for a week: frozen snapshot wins, else base + progression.
+function resolvePlan(wk){
+  wk=wk||weekKey();
+  if(APP.planWeeks&&APP.planWeeks[wk])return APP.planWeeks[wk];
+  return applyProgression(APP.activePlan||DEFAULT_PLAN(),wk);
+}
+// Current-week resolved plan. render() sets PLAN once; other reads fall back to a fresh resolve.
+var PLAN=null;
+function curPlan(){return PLAN||resolvePlan(weekKey());}
+
+// Freeze the current week's resolved plan the first time we persist within that week (history).
+function freezeCurrentWeekIfNeeded(){
+  if(!initSynced)return false;
+  var wk=weekKey();
+  if(!APP.planWeeks)APP.planWeeks={};
+  if(APP.planWeeks[wk])return false;
+  APP.planWeeks[wk]=deepClone(applyProgression(APP.activePlan||DEFAULT_PLAN(),wk));
+  return true;
+}
+
+// Section-wise merge of an import doc onto a base plan (present sections replace, absent carry).
+function mergePlan(base,doc){
+  var merged=deepClone(base);
+  merged.meta=merged.meta||{};
+  merged.meta.source="import";
+  if(doc.note)merged.meta.note=doc.note;
+  if(doc.targets){
+    merged.targets=Object.assign({},merged.targets,doc.targets);
+    if(doc.targets.water!=null)merged.meta.waterPinned=true;
+  }
+  if(Array.isArray(doc.meals))merged.meals=doc.meals.map(function(m){return {id:m.id,label:m.label,time:m.time,tMin:(m.tMin!=null?m.tMin:parseTime(m.time)),cal:m.cal,prot:m.prot};});
+  if(Array.isArray(doc.supplements))merged.supplements=doc.supplements.map(function(s){return {id:s.id,label:s.label,time:s.time,tMin:(s.tMin!=null?s.tMin:parseTime(s.time)),introWeek:(s.introWeek!=null?s.introWeek:1)};});
+  if(doc.workouts&&typeof doc.workouts==="object"){
+    merged.workouts=Object.assign({},merged.workouts);
+    Object.keys(doc.workouts).forEach(function(day){merged.workouts[day]=doc.workouts[day];});
+  }
+  if(doc.dinnerPlan&&typeof doc.dinnerPlan==="object")merged.dinnerPlan=Object.assign({},merged.dinnerPlan,doc.dinnerPlan);
+  if(doc.recipes&&typeof doc.recipes==="object")merged.recipes=Object.assign({},merged.recipes||{},doc.recipes);
+  return merged;
+}
+
+// Validate a pasted import document. Returns {ok, doc?, errors[]}. No mutation.
+function parsePlanImport(text){
+  var doc;
+  try{doc=JSON.parse(text);}catch(e){return {ok:false,errors:["Not valid JSON — "+e.message]};}
+  if(!doc||typeof doc!=="object"||Array.isArray(doc))return {ok:false,errors:["Expected a JSON object."]};
+  var errors=[];
+  if(doc.tlgPlan!==1)errors.push('Missing or unsupported "tlgPlan" version (expected 1).');
+  if(doc.targetWeek!=null&&!(doc.targetWeek==="next"||doc.targetWeek==="current"||/^\d{4}-\d{2}-\d{2}$/.test(doc.targetWeek)))
+    errors.push('targetWeek must be "next", "current", or a YYYY-MM-DD date.');
+  var DSET=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  if(doc.workouts!=null){
+    if(typeof doc.workouts!=="object")errors.push("workouts must be an object keyed by weekday.");
+    else Object.keys(doc.workouts).forEach(function(day){
+      if(DSET.indexOf(day)===-1)errors.push('workouts: unknown weekday "'+day+'".');
+      else if(!doc.workouts[day]||!Array.isArray(doc.workouts[day].exercises))errors.push("workouts."+day+" needs an exercises array.");
+    });
+  }
+  if(doc.dinnerPlan!=null){
+    if(typeof doc.dinnerPlan!=="object")errors.push("dinnerPlan must be an object keyed by weekday.");
+    else Object.keys(doc.dinnerPlan).forEach(function(day){
+      if(DSET.indexOf(day)===-1)errors.push('dinnerPlan: unknown weekday "'+day+'".');
+      else{var rid=doc.dinnerPlan[day];if(!RECIPES[rid]&&!(doc.recipes&&doc.recipes[rid]))errors.push('dinnerPlan.'+day+': unknown recipe "'+rid+'".');}
+    });
+  }
+  if(doc.supplements!=null){
+    if(!Array.isArray(doc.supplements))errors.push("supplements must be an array.");
+    else doc.supplements.forEach(function(s,i){if(!s||!s.id)errors.push("supplements["+i+"] missing id.");});
+  }
+  if(doc.targets!=null&&(typeof doc.targets!=="object"||Array.isArray(doc.targets)))errors.push("targets must be an object.");
+  if(errors.length)return {ok:false,errors:errors};
+  return {ok:true,doc:doc};
+}
+
+function resolveTargetWeek(doc){
+  var t=doc.targetWeek||"next";
+  if(t==="current")return weekKey();
+  if(t==="next")return nextSundayKey();
+  return t;
+}
+
+// Apply a validated import: freeze the current week under the OLD plan, set activePlan, and for a
+// current/past target stamp the frozen snapshot. A future target freezes when that week arrives.
+function applyPlanImport(doc){
+  var wk=resolveTargetWeek(doc);
+  freezeCurrentWeekIfNeeded();
+  var merged=mergePlan(APP.activePlan||DEFAULT_PLAN(),doc);
+  if(doc.generatedAt)merged.meta.generatedAt=doc.generatedAt;
+  APP.activePlan=merged;
+  if(!APP.planWeeks)APP.planWeeks={};
+  if(wk<=weekKey())APP.planWeeks[wk]=deepClone(applyProgression(merged,wk));
+  saveAll();
+  render();
 }
 
 function getDayLog(){
@@ -303,11 +450,12 @@ function getDayLog(){
 }
 function getWeekState(){
   var k=weekKey();
-  if(!APP.weeks[k])APP.weeks[k]={dinnerPlan:Object.assign({},DEFAULT_DINNER_PLAN)};
+  if(!APP.weeks[k])APP.weeks[k]={dinnerPlan:Object.assign({},resolvePlan(k).dinnerPlan)};
   return APP.weeks[k];
 }
 
 function computeTotals(){
+  var MEALS=curPlan().meals; // resolved meal slots for the current week
   var dl=getDayLog();
   var cal=0,prot=0;
   MEALS.forEach(function(m){
@@ -317,7 +465,28 @@ function computeTotals(){
   return{cal:cal,prot:prot};
 }
 
+// Sum eaten meals across the current week (Sunday start → +6 days).
+function computeWeekTotals(){
+  var MEALS=curPlan().meals; // resolved meal slots (fallback cal/prot only)
+  var start=new Date(weekKey()+"T00:00:00");
+  var cal=0,prot=0,days=0;
+  Object.keys(APP.days).forEach(function(dk){
+    var diff=(new Date(dk+"T00:00:00")-start)/86400000;
+    if(diff<0||diff>6)return;
+    var day=APP.days[dk];
+    if(!day||!day.meals)return;
+    var counted=false;
+    MEALS.forEach(function(m){
+      var e=day.meals[m.id];
+      if(mealEaten(e)){cal+=mealCal(e,m);prot+=mealProt(e,m);counted=true;}
+    });
+    if(counted)days++;
+  });
+  return{cal:cal,prot:prot,days:days};
+}
+
 function computeAdjusted(){
+  var MEALS=curPlan().meals; // resolved meal slots for the current week
   var dl=getDayLog();
   var adj={};
   MEALS.forEach(function(m){adj[m.id]={cal:m.cal,prot:m.prot};});
@@ -340,11 +509,10 @@ function computeAdjusted(){
   return adj;
 }
 
-function suggestSnack(){
+// Pure pick — the best snack given what's been eaten (no time/dismissal gates).
+function recommendSnack(){
+  var MEALS=curPlan().meals,TARGETS=curPlan().targets;
   var dl=getDayLog();
-  var today=todayKey();
-  if(UI.snackDismissed[today])return null;
-  if(!mealEaten(dl.meals.lunch)||mealEaten(dl.meals.snack))return null;
   var cp=0,cc=0;
   ["breakfast","lunch"].forEach(function(id){
     var e=dl.meals[id];if(!mealEaten(e))return;
@@ -359,6 +527,13 @@ function suggestSnack(){
   if(!viable.length)return null;
   viable.sort(function(a,b){return Math.abs(a.prot-needProt)-Math.abs(b.prot-needProt);});
   return{snack:viable[0],needProt:Math.round(needProt),remCal:Math.round(remCal)};
+}
+function suggestSnack(){
+  var dl=getDayLog();
+  var today=todayKey();
+  if(UI.snackDismissed[today])return null;
+  if(!mealEaten(dl.meals.lunch)||mealEaten(dl.meals.snack))return null;
+  return recommendSnack();
 }
 
 // ── BREAKFAST & LUNCH OPTION POOLS ────────────────────────────────────────────
@@ -381,16 +556,8 @@ const LUNCH_OPTIONS=[
 
 // ── MEAL SUGGESTION ENGINE ─────────────────────────────────────────────────────
 
-function suggestBreakfast(){
-  var dl=getDayLog();
-  var today=todayKey();
-  // Don't suggest if already eaten or dismissed
-  if(mealEaten(dl.meals.breakfast))return null;
-  if(UI.breakfastDismissed&&UI.breakfastDismissed[today])return null;
-  // Only suggest after 7:35 AM (post-walk window) and before 9 AM
-  var nm=nowMin();
-  if(nm<455||nm>540)return null;
-
+// Pure pick — the best breakfast for today's schedule (no time/dismissal gates).
+function recommendBreakfast(){
   var day=dayAbbr();
   var isWorkoutDay=["Mon","Wed","Fri"].indexOf(day)!==-1;
   var isRecoveryDay=day==="Thu"||day==="Sun";
@@ -416,17 +583,22 @@ function suggestBreakfast(){
 
   return{option:pick,reason:reason,isWorkoutDay:isWorkoutDay};
 }
-
-function suggestLunch(){
+function suggestBreakfast(){
   var dl=getDayLog();
   var today=todayKey();
   // Don't suggest if already eaten or dismissed
-  if(mealEaten(dl.meals.lunch))return null;
-  if(UI.lunchDismissed&&UI.lunchDismissed[today])return null;
-  // Only suggest between 11:30 AM and 1 PM
+  if(mealEaten(dl.meals.breakfast))return null;
+  if(UI.breakfastDismissed&&UI.breakfastDismissed[today])return null;
+  // Only suggest after 7:35 AM (post-walk window) and before 9 AM
   var nm=nowMin();
-  if(nm<690||nm>780)return null;
+  if(nm<455||nm>540)return null;
+  return recommendBreakfast();
+}
 
+// Pure pick — the best lunch given breakfast intake (no time/dismissal gates).
+function recommendLunch(){
+  var MEALS=curPlan().meals,TARGETS=curPlan().targets;
+  var dl=getDayLog();
   // Calculate protein consumed at breakfast
   var bEntry=dl.meals.breakfast;
   var bProt=0,bCal=0;
@@ -463,6 +635,30 @@ function suggestLunch(){
 
   return{option:pick,reason:reason,protTarget:protGap,calTarget:Math.round(lunchCalTarget)};
 }
+function suggestLunch(){
+  var dl=getDayLog();
+  var today=todayKey();
+  // Don't suggest if already eaten or dismissed
+  if(mealEaten(dl.meals.lunch))return null;
+  if(UI.lunchDismissed&&UI.lunchDismissed[today])return null;
+  // Only suggest between 11:30 AM and 1 PM
+  var nm=nowMin();
+  if(nm<690||nm>780)return null;
+  return recommendLunch();
+}
+
+// The specific planned meal for each slot today: dinner from the weekly dinner plan,
+// breakfast/lunch/snack from the day-aware recommendation engines.
+function plannedMeal(m,ws,today){
+  if(m.id==="dinner"){
+    var r=RECIPES[ws.dinnerPlan[today]];
+    return r?{name:r.label,cal:r.cal,prot:r.rprot}:null;
+  }
+  if(m.id==="breakfast"){var b=recommendBreakfast();return b?{name:b.option.label,cal:b.option.cal,prot:b.option.prot}:null;}
+  if(m.id==="lunch"){var l=recommendLunch();return l?{name:l.option.label,cal:l.option.cal,prot:l.option.prot}:null;}
+  if(m.id==="snack"){var s=recommendSnack();return s?{name:s.snack.label,cal:s.snack.cal,prot:s.snack.prot}:null;}
+  return null;
+}
 
 var lastSyncStatus="…";
 function setSyncStatus(s){
@@ -480,13 +676,15 @@ function render(){
   app.innerHTML="";
 
   var today=dayAbbr();
+  PLAN=resolvePlan(weekKey()); // resolve the current week's plan once for this render
+  var pw=programWeek(weekKey()); // real, uncapped program-week number
   var ws=getWeekState();
   var dl=getDayLog();
   var totals=computeTotals();
   var adj=computeAdjusted();
   var nm=nowMin();
   APP.planWeek=computePlanWeek();
-  var activeSupps=SUPPS.filter(function(s){return s.week<=APP.planWeek;});
+  var activeSupps=PLAN.supplements; // already phase-filtered by the resolver
   var snackSug=suggestSnack();
   var breakfastSug=suggestBreakfast();
   var lunchSug=suggestLunch();
@@ -530,8 +728,8 @@ function render(){
   if(UI.tab==="today"){
     // Stats
     var statRow=h("div",{style:{display:"flex",gap:"14px",marginBottom:"22px"}},[
-      makeStatBlock("Protein",totals.prot,TARGETS.prot,"g","var(--warm)"),
-      makeStatBlock("Calories",totals.cal,TARGETS.cal,"","var(--sage)"),
+      makeStatBlock("Protein",totals.prot,PLAN.targets.prot,"g","var(--warm)"),
+      makeStatBlock("Calories",totals.cal,PLAN.targets.cal,"","var(--sage)"),
     ]);
     wrap.appendChild(statRow);
 
@@ -554,7 +752,7 @@ function render(){
 
     // Meals
     wrap.appendChild(h("div",{class:"sec-label"},"Today's meals"));
-    MEALS.forEach(function(m){wrap.appendChild(makeMealCard(m,dl,adj));});
+    PLAN.meals.forEach(function(m){wrap.appendChild(makeMealCard(m,dl,adj,ws,today));});
 
     // Hydration
     wrap.appendChild(h("div",{class:"sec-label"},"Hydration"));
@@ -566,7 +764,7 @@ function render(){
 
     // Workout
     wrap.appendChild(h("div",{class:"sec-label"},"Today's workout"));
-    var wo=WORKOUTS[today]||WORKOUTS["Sun"];
+    var wo=PLAN.workouts[today]||PLAN.workouts["Sun"];
     var woCard=h("div",{class:"card"},[
       h("div",{style:{fontFamily:"var(--font-d)",fontSize:"16px",color:"var(--text)",marginBottom:"8px"}},wo.title),
       h("ul",{style:{margin:0,padding:0,listStyle:"none"}},wo.exercises.map(function(ex,i){
@@ -580,7 +778,7 @@ function render(){
     // Supplements
     wrap.appendChild(h("div",{class:"sec-label"},"Supplements"));
     wrap.appendChild(h("div",{style:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px",flexWrap:"wrap"}},[
-      h("span",{style:{fontFamily:"var(--font-d)",fontSize:"12px",letterSpacing:".06em",textTransform:"uppercase",color:"var(--sage)",background:"var(--card)",border:"1px solid var(--line)",borderRadius:"8px",padding:"5px 10px"}},"Week "+APP.planWeek+" of 4"),
+      h("span",{style:{fontFamily:"var(--font-d)",fontSize:"12px",letterSpacing:".06em",textTransform:"uppercase",color:"var(--sage)",background:"var(--card)",border:"1px solid var(--line)",borderRadius:"8px",padding:"5px 10px"}},"Week "+pw),
       h("label",{style:{display:"flex",alignItems:"center",gap:"6px",fontSize:"12px",color:"var(--muted)"}},[
         "Plan started ",
         makeInput("date",APP.planStartDate,function(v){APP.planStartDate=v;saveAll();render();},{width:"130px"}),
@@ -598,7 +796,8 @@ function render(){
     }));
     wrap.appendChild(suppCard);
 
-    wrap.appendChild(h("footer",{},"Weekly protein: "+Math.round(totals.prot)+"g · Weekly calories: "+Math.round(totals.cal)));
+    var week=computeWeekTotals();
+    wrap.appendChild(h("footer",{},"This week ("+week.days+(week.days===1?" day":" days")+" logged): "+Math.round(week.prot)+"g protein · "+Math.round(week.cal)+" calories"));
   }
 
   // ── WORKOUT TAB ──
@@ -642,7 +841,7 @@ function makeDueCard(activeSupps,dl,nm,snackSug){
   var items=activeSupps.map(function(s){
     return{key:"s-"+s.id,label:s.label,time:s.time,due:s.tMin<=nm,done:!!(dl.supplements&&dl.supplements[s.id]),kind:"supp",id:s.id};
   });
-  var snack=MEALS[2];
+  var snack=curPlan().meals[2];
   items.push({key:"snack",label:"Snack time — "+snack.prot+"g protein target",time:snack.time,due:snack.tMin<=nm,done:mealEaten(dl.meals.snack),kind:"snack"});
   var pending=items.filter(function(i){return !i.done;});
   if(!pending.length){
@@ -718,7 +917,7 @@ function makeWeekStrip(ws,today){
   }));
 }
 
-function makeMealCard(m,dl,adj){
+function makeMealCard(m,dl,adj,ws,todayAbbr){
   var entry=dl.meals[m.id];
   var eaten=mealEaten(entry);
   var a=adj[m.id];
@@ -776,17 +975,34 @@ function makeMealCard(m,dl,adj){
     ]));
 
   } else {
-    // No suggestion — generic buttons plus optional name field
-    var nameIn=makeInput("text","",null,{width:"100%",marginBottom:"8px",placeholder:"What did you have? (optional)"});
-    card.appendChild(h("div",{style:{marginTop:"12px"}},[nameIn]));
-    card.appendChild(h("div",{style:{display:"flex",gap:"8px",marginTop:"8px"}},[
-      h("button",{class:"btn-primary",style:{flex:1},onclick:function(){
-        var name=nameIn.value.trim();
-        setMealEaten(dl,m.id,a.cal,a.prot,name||null);
-        saveAll();render();
-      }},"Ate as planned"),
-      h("button",{class:"btn-ghost",style:{flex:"none"},onclick:function(){showEditMeal(card,m,dl,a,nameIn);}},"\u270e Log different"),
-    ]));
+    var planned=plannedMeal(m,ws,todayAbbr);
+    if(planned){
+      // Show the specific planned meal for today — "Ate as planned" logs it by name.
+      card.appendChild(h("div",{style:{marginTop:"12px",background:"rgba(124,148,115,0.08)",borderRadius:"8px",padding:"10px 12px"}},[
+        h("div",{style:{fontSize:"12px",color:"var(--sage)",marginBottom:"4px"}},"Planned for today"),
+        h("div",{style:{fontSize:"14px",color:"var(--text)",marginBottom:"2px"}},planned.name),
+        h("div",{style:{fontSize:"12px",color:"var(--muted)"}},planned.cal+" cal · "+planned.prot+"g protein"),
+      ]));
+      card.appendChild(h("div",{style:{display:"flex",gap:"8px",marginTop:"12px"}},[
+        h("button",{class:"btn-primary",style:{flex:1},onclick:function(){
+          setMealEaten(dl,m.id,planned.cal,planned.prot,planned.name);
+          saveAll();render();
+        }},"Ate as planned"),
+        h("button",{class:"btn-ghost",style:{flex:"none"},onclick:function(){showEditMeal(card,m,dl,a);}},"✎ Log different"),
+      ]));
+    } else {
+      // Fallback — no planned option resolved: generic buttons plus optional name field
+      var nameIn=makeInput("text","",null,{width:"100%",marginBottom:"8px",placeholder:"What did you have? (optional)"});
+      card.appendChild(h("div",{style:{marginTop:"12px"}},[nameIn]));
+      card.appendChild(h("div",{style:{display:"flex",gap:"8px",marginTop:"8px"}},[
+        h("button",{class:"btn-primary",style:{flex:1},onclick:function(){
+          var name=nameIn.value.trim();
+          setMealEaten(dl,m.id,a.cal,a.prot,name||null);
+          saveAll();render();
+        }},"Ate as planned"),
+        h("button",{class:"btn-ghost",style:{flex:"none"},onclick:function(){showEditMeal(card,m,dl,a,nameIn);}},"✎ Log different"),
+      ]));
+    }
   }
   return card;
 }
@@ -813,6 +1029,7 @@ function showEditMeal(card,m,dl,a,existingNameIn){
 }
 
 function makeHydrationCard(dl){
+  var TARGETS=curPlan().targets; // resolved water goal for the current week
   var pct=Math.min(100,Math.round((dl.water/TARGETS.water)*100));
   return h("div",{class:"card",style:{marginBottom:"16px"}},[
     h("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:"8px"}},[
@@ -873,9 +1090,18 @@ function makeBreakCard(dl){
 
 var restTimer=null,restSecs=0,restRunning=false,restExId=null;
 
+// The evening activity string, if it's a real thing to check off (not a rest evening).
+function eveningActivity(wo){
+  if(!wo||!wo.evening)return null;
+  var e=wo.evening.trim();
+  if(/^rest$/i.test(e)||/^full rest/i.test(e))return null;
+  return e;
+}
+function eveningDone(log){return !!(log&&log["evening"]&&log["evening"][0]&&log["evening"][0].done);}
+
 // Keep the canonical `workoutDone` boolean in sync with the detailed set log.
 function updateWorkoutDone(dl,today){
-  var wo=WORKOUTS[today]||WORKOUTS["Sun"];
+  var wo=curPlan().workouts[today]||curPlan().workouts["Sun"];
   var log=dl.workoutLog||{};
   var total=0,done=0;
   wo.exercises.forEach(function(ex){
@@ -883,11 +1109,12 @@ function updateWorkoutDone(dl,today){
     var sets=ex.sets||1;total+=sets;
     for(var i=0;i<sets;i++){if(log[ex.id]&&log[ex.id][i]&&log[ex.id][i].done)done++;}
   });
+  if(eveningActivity(wo)){total+=1;if(eveningDone(log))done+=1;}
   dl.workoutDone=total>0&&done===total;
 }
 
 function makeWorkoutTab(dl,today){
-  var wo=WORKOUTS[today]||WORKOUTS["Sun"];
+  var wo=curPlan().workouts[today]||curPlan().workouts["Sun"];
   var log=dl.workoutLog||{};
   var wrap2=h("div",{});
 
@@ -917,6 +1144,8 @@ function makeWorkoutTab(dl,today){
       if(log[ex.id]&&log[ex.id][i]&&log[ex.id][i].done)doneSets++;
     }
   });
+  var evAct=eveningActivity(wo);
+  if(evAct){totalSets+=1;if(eveningDone(log))doneSets+=1;}
   if(totalSets>0){
     var pct=Math.round((doneSets/totalSets)*100);
     wrap2.appendChild(h("div",{style:{marginBottom:"16px"}},[
@@ -1010,6 +1239,27 @@ function makeWorkoutTab(dl,today){
     wrap2.appendChild(exCard);
   });
 
+  // Evening activity (e.g. zone-2 bike) — checkable like an exercise.
+  if(evAct){
+    var evDone=eveningDone(log);
+    var evCard=h("div",{class:"card",style:{marginBottom:"12px",borderColor:evDone?"var(--sage)":"var(--line)"}});
+    evCard.appendChild(h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"12px"}},[
+      h("div",{},[
+        h("div",{style:{fontFamily:"var(--font-d)",fontSize:"17px",color:"var(--text)"}},"Evening activity"),
+        h("div",{style:{fontSize:"11px",color:"#7BAFC4",textTransform:"uppercase",letterSpacing:".06em",marginTop:"2px"}},"Evening"),
+      ]),
+      h("button",{style:{fontSize:"12px",padding:"4px 10px",background:evDone?"var(--sage)":"transparent",color:evDone?"var(--bg)":"var(--muted)",border:"1px solid "+(evDone?"var(--sage)":"var(--line)"),borderRadius:"6px",cursor:"pointer",fontWeight:600,flexShrink:0},onclick:function(){
+        if(!log["evening"])log["evening"]={};
+        if(!log["evening"][0])log["evening"][0]={done:false};
+        log["evening"][0].done=!log["evening"][0].done;
+        updateWorkoutDone(dl,today);
+        saveAll();render();
+      }},evDone?"✓ Done":"Mark done"),
+    ]));
+    evCard.appendChild(h("div",{style:{fontSize:"12.5px",color:"var(--muted)",marginTop:"8px",lineHeight:"1.5"}},evAct));
+    wrap2.appendChild(evCard);
+  }
+
   // Floating rest timer
   if(restSecs>0){
     var rm=Math.floor(restSecs/60),rs=restSecs%60;
@@ -1049,6 +1299,52 @@ function startRestTimer(secs){
 }
 
 // ── CHECK-IN TAB ──
+// Paste-to-import a Claude-generated plan JSON. Validate → preview → apply.
+function makeImportCard(){
+  var card=h("div",{class:"card",style:{marginBottom:"16px"}});
+  card.appendChild(h("div",{style:{fontFamily:"var(--font-d)",fontSize:"14px",color:"var(--text)",marginBottom:"6px"}},"Import a plan"));
+  card.appendChild(h("div",{style:{fontSize:"12px",color:"var(--muted)",marginBottom:"10px",lineHeight:"1.5"}},"Paste the plan JSON from Claude. It sets the target week and syncs across devices. Past weeks stay frozen."));
+  var ta=h("textarea",{style:{width:"100%",minHeight:"92px",background:"var(--bg)",border:"1px solid var(--line)",borderRadius:"6px",color:"var(--text)",padding:"8px",fontFamily:"monospace",fontSize:"12px",resize:"vertical"},placeholder:'{ "tlgPlan":1, "targetWeek":"next", ... }'});
+  ta.value=UI.importText||"";
+  ta.addEventListener("input",function(){UI.importText=ta.value;});
+  card.appendChild(ta);
+
+  if(UI.importErrors&&UI.importErrors.length){
+    card.appendChild(h("div",{style:{marginTop:"8px",fontSize:"12px",color:"var(--warm)"}},[
+      h("div",{style:{marginBottom:"4px"}},"Couldn't apply — fix these:"),
+      h("ul",{style:{margin:"0 0 0 16px",padding:0}},UI.importErrors.map(function(e){return h("li",{style:{marginBottom:"2px"}},e);})),
+    ]));
+  }
+  if(UI.importPreview){
+    var p=UI.importPreview;
+    card.appendChild(h("div",{style:{marginTop:"8px",background:"var(--card-strong)",border:"1px solid var(--sage)",borderRadius:"8px",padding:"10px 12px"}},[
+      h("div",{style:{fontSize:"12px",color:"var(--sage)",marginBottom:"4px"}},"Ready to apply"),
+      h("div",{style:{fontSize:"13px",color:"var(--text)"}},"Target: week of "+p.wk+(p.isCurrent?" (this week)":"")),
+      h("div",{style:{fontSize:"12px",color:"var(--muted)",marginTop:"2px"}},"Updates: "+p.sections.join(", ")+(p.note?' — "'+p.note+'"':"")),
+      p.isCurrent?h("div",{style:{fontSize:"12px",color:"var(--warm)",marginTop:"6px"}},"Note: this overwrites the current week's plan; your logged data is untouched."):"",
+    ]));
+  }
+  card.appendChild(h("div",{style:{display:"flex",gap:"8px",marginTop:"10px"}},[
+    h("button",{class:"btn-ghost",onclick:function(){
+      var res=parsePlanImport(UI.importText||"");
+      if(!res.ok){UI.importErrors=res.errors;UI.importPreview=null;render();return;}
+      var wk=resolveTargetWeek(res.doc);
+      var sections=["targets","supplements","workouts","dinnerPlan","meals"].filter(function(k){return res.doc[k]!=null;});
+      UI.importErrors=null;
+      UI.importPreview={doc:res.doc,wk:wk,isCurrent:wk===weekKey(),sections:sections.length?sections:["(nothing — carries forward)"],note:res.doc.note};
+      render();
+    }},"Validate"),
+    UI.importPreview?h("button",{class:"btn-primary",onclick:function(){
+      var doc=UI.importPreview.doc;
+      UI.importText="";UI.importPreview=null;UI.importErrors=null;UI.importApplied=true;
+      applyPlanImport(doc); // persists + re-renders
+    }},"Apply plan"):"",
+    (UI.importText||UI.importPreview||UI.importErrors)?h("button",{class:"btn-ghost",onclick:function(){UI.importText="";UI.importPreview=null;UI.importErrors=null;render();}},"Clear"):"",
+  ]));
+  if(UI.importApplied){card.appendChild(h("div",{style:{marginTop:"8px",fontSize:"12px",color:"var(--sage)"}},"✓ Plan applied."));UI.importApplied=false;}
+  return card;
+}
+
 function makeCheckinTab(){
   var wk=weekKey();
   if(APP.checkIns[wk])CI=Object.assign({},APP.checkIns[wk]);
@@ -1056,6 +1352,7 @@ function makeCheckinTab(){
   var wrap2=h("div",{});
   wrap2.appendChild(h("div",{class:"sec-label",style:{margin:"0 0 16px"}},"Weekly Check-In"));
   wrap2.appendChild(h("div",{style:{fontSize:"12.5px",color:"var(--muted)",marginBottom:"20px"}},saved?"\u2713 This week is saved.":"Fill in what you can — nothing is required."));
+  wrap2.appendChild(makeImportCard());
 
   function field(label,content){
     return h("div",{class:"card",style:{marginBottom:"12px"}},[
@@ -1343,6 +1640,8 @@ function makeInput(type,val,onChange,style){
       APP.checkIns=local.checkIns||{};
       APP.groceryState=local.groceryState||null;
       APP.planStartDate=local.planStartDate||todayKey();
+      APP.planWeeks=local.planWeeks||{};
+      APP.activePlan=local.activePlan||null;
       APP.updatedAt=local.updatedAt||null;
       if(local.groceryState)GS=Object.assign({},local.groceryState);
       if(local.checkIns){
@@ -1370,6 +1669,8 @@ function makeInput(type,val,onChange,style){
           APP.checkIns=s.checkIns||APP.checkIns;
           APP.groceryState=s.groceryState||APP.groceryState;
           APP.planStartDate=s.planStartDate||APP.planStartDate;
+          APP.planWeeks=s.planWeeks||APP.planWeeks;
+          APP.activePlan=s.activePlan||APP.activePlan;
           APP.updatedAt=s.updatedAt||cloud.ts||APP.updatedAt;
           if(APP.groceryState)GS=Object.assign({},APP.groceryState);
           if(APP.checkIns){var wk2=weekKey();if(APP.checkIns[wk2])CI=Object.assign({},APP.checkIns[wk2]);}
@@ -1381,5 +1682,6 @@ function makeInput(type,val,onChange,style){
     } catch(e){ console.warn("Cloud sync failed",e); setSyncStatus("offline"); }
   }
 
+  initSynced=true; // safe to freeze week snapshots now that local+cloud have settled
   scheduleDay();
 })();
