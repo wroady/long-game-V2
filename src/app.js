@@ -203,17 +203,156 @@ function syncEnabled(){
 // ── STORAGE ────────────────────────────────────────────────────────────────────
 function lsGet(k){try{var v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch(e){return null;}}
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+
+// ── AUTH ─────────────────────────────────────────────────────────────────────
+// Hand-rolled email+password auth (Supabase GoTrue). Cloud data access requires a session; the app
+// stays usable offline with local data (soft gate). The anon key is used only for auth endpoints.
+var SESSION=null;        // {access_token, refresh_token, expires_at(ms), user:{id,email}}
+var refreshPromise=null; // de-dupes concurrent token refreshes
+function loadSession(){SESSION=lsGet("tlg-auth")||null;}
+function saveSession(s){SESSION=s;lsSet("tlg-auth",s);}
+function clearSession(){SESSION=null;try{localStorage.removeItem("tlg-auth");}catch(e){}}
+function sessionValid(){return !!(SESSION&&SESSION.access_token);}
+function sessionEmail(){return SESSION&&SESSION.user?SESSION.user.email:null;}
+function parseJwtExp(token){try{var p=JSON.parse(atob(token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/")));return p.exp?p.exp*1000:0;}catch(e){return 0;}}
+function buildSession(d){
+  var exp=d.expires_in?Date.now()+d.expires_in*1000:parseJwtExp(d.access_token);
+  return {access_token:d.access_token,refresh_token:d.refresh_token,expires_at:exp,user:d.user?{id:d.user.id,email:d.user.email}:(SESSION&&SESSION.user)};
+}
+async function authSignIn(email,password){
+  var r=await fetch(SUPABASE_URL+"/auth/v1/token?grant_type=password",{method:"POST",headers:{"apikey":SUPABASE_KEY,"Content-Type":"application/json"},body:JSON.stringify({email:email,password:password})});
+  var d=await r.json();
+  if(!r.ok)throw new Error(d.error_description||d.msg||d.error||"Sign-in failed");
+  saveSession(buildSession(d));
+  return SESSION;
+}
+function authRefresh(){
+  if(refreshPromise)return refreshPromise;
+  if(!SESSION||!SESSION.refresh_token)return Promise.resolve(null);
+  refreshPromise=(async function(){
+    try{
+      var r=await fetch(SUPABASE_URL+"/auth/v1/token?grant_type=refresh_token",{method:"POST",headers:{"apikey":SUPABASE_KEY,"Content-Type":"application/json"},body:JSON.stringify({refresh_token:SESSION.refresh_token})});
+      var d=await r.json();
+      if(!r.ok||!d.access_token){clearSession();return null;}
+      saveSession(buildSession(d));return SESSION.access_token;
+    }catch(e){return null;}
+  })();
+  refreshPromise.finally(function(){refreshPromise=null;});
+  return refreshPromise;
+}
+async function getAccessToken(){
+  if(!SESSION||!SESSION.access_token)return null;
+  if((SESSION.expires_at||0)-Date.now()<60000)await authRefresh();
+  return SESSION?SESSION.access_token:null;
+}
+// Fetch wrapper for /rest data endpoints: injects the session bearer, refreshes once on 401.
+// Never falls back to the anon key for data — a missing session returns a no-session sentinel.
+async function authedFetch(url,opts){
+  opts=opts||{};
+  var token=await getAccessToken();
+  if(!token)return {ok:false,status:401,_noSession:true,json:async function(){return null;}};
+  function withAuth(t){return Object.assign({},opts,{headers:Object.assign({},opts.headers,{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+t})});}
+  var res=await fetch(url,withAuth(token));
+  if(res.status===401){
+    var nt=await authRefresh();
+    if(nt)res=await fetch(url,withAuth(nt));
+    else clearSession();
+  }
+  return res;
+}
+async function authSignOut(){
+  try{await authedFetch(SUPABASE_URL+"/auth/v1/logout",{method:"POST"});}catch(e){}
+  clearSession();setSyncStatus("signedout");render();
+}
+
 async function cloudPush(state){
   if(!syncEnabled())return; // never write to the production row from local dev/preview
-  try{await fetch(SUPABASE_URL+"/rest/v1/app_sync",{method:"POST",headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY,"Content-Type":"application/json","Prefer":"resolution=merge-duplicates"},body:JSON.stringify({user_id:"rodney",state:state,updated_at:new Date().toISOString()})});}
+  if(!sessionValid()){setSyncStatus("signedout");return;}
+  try{
+    var r=await authedFetch(SUPABASE_URL+"/rest/v1/app_sync",{method:"POST",headers:{"Content-Type":"application/json","Prefer":"resolution=merge-duplicates"},body:JSON.stringify({user_id:"rodney",state:state,updated_at:new Date().toISOString()})});
+    if(r&&r._noSession)setSyncStatus("signedout");
+  }
   catch(e){console.warn("Cloud push failed",e);}
 }
 // Build the canonical live-schema object to persist (drops runtime-only fields like planWeek/UI).
 function serializeState(){
   return {days:APP.days,weeks:APP.weeks,checkIns:APP.checkIns,groceryState:APP.groceryState,planStartDate:APP.planStartDate,planWeeks:APP.planWeeks,activePlan:APP.activePlan,updatedAt:APP.updatedAt};
 }
+
+// ── CONFLICT-FREE MERGE ───────────────────────────────────────────────────────
+// Merge two full states so concurrent edits on different devices don't clobber each other.
+function unionKeys(a,b){var s={};Object.keys(a||{}).forEach(function(k){s[k]=1;});Object.keys(b||{}).forEach(function(k){s[k]=1;});return Object.keys(s);}
+function mergeByTs(a,b){ // per-key, larger .ts wins (missing ts ⇒ 0, tie → a/local)
+  a=a||{};b=b||{};var out={};
+  unionKeys(a,b).forEach(function(k){
+    if(!(k in a)){out[k]=b[k];return;}
+    if(!(k in b)){out[k]=a[k];return;}
+    out[k]=((b[k]&&b[k].ts)||0)>((a[k]&&a[k].ts)||0)?b[k]:a[k];
+  });
+  return out;
+}
+function mergeDay(a,b){
+  if(!a)return b;if(!b)return a;
+  var at=a.ts||0,bt=b.ts||0,newer=at>=bt?a:b;
+  var day={ts:Math.max(at,bt)};
+  day.meals={};
+  ["breakfast","lunch","snack","dinner"].forEach(function(id){
+    var ma=a.meals&&a.meals[id],mb=b.meals&&b.meals[id];
+    if(!ma&&!mb){day.meals[id]=blankMeal();return;}
+    if(!ma){day.meals[id]=mb;return;}
+    if(!mb){day.meals[id]=ma;return;}
+    var ea=ma.status==="eaten",eb=mb.status==="eaten";
+    day.meals[id]=(ea&&!eb)?ma:(eb&&!ea)?mb:(newer===a?ma:mb); // eaten beats planned; else newer
+  });
+  day.water=Math.max(a.water||0,b.water||0);
+  day.deskBreaksTaken=Math.max(a.deskBreaksTaken||0,b.deskBreaksTaken||0);
+  day.supplements={};
+  unionKeys(a.supplements,b.supplements).forEach(function(k){day.supplements[k]=!!((a.supplements&&a.supplements[k])||(b.supplements&&b.supplements[k]));});
+  day.workoutLog={};
+  unionKeys(a.workoutLog,b.workoutLog).forEach(function(ex){
+    var la=(a.workoutLog&&a.workoutLog[ex])||{},lb=(b.workoutLog&&b.workoutLog[ex])||{};
+    day.workoutLog[ex]={};
+    unionKeys(la,lb).forEach(function(si){
+      var sa=la[si],sb=lb[si];
+      if(!sa){day.workoutLog[ex][si]=sb;return;}
+      if(!sb){day.workoutLog[ex][si]=sa;return;}
+      var pick=newer===a?sa:sb,other=newer===a?sb:sa;
+      day.workoutLog[ex][si]={done:!!(sa.done||sb.done),reps:pick.reps||other.reps||"",weight:pick.weight||other.weight||"",notes:pick.notes||other.notes||""};
+    });
+  });
+  day.workoutDone=!!(a.workoutDone||b.workoutDone);
+  return day;
+}
+function mergeState(local,cloud){
+  if(!cloud)return local;
+  if(!local)return cloud;
+  var out={days:{}};
+  unionKeys(local.days,cloud.days).forEach(function(d){out.days[d]=mergeDay(local.days&&local.days[d],cloud.days&&cloud.days[d]);});
+  out.planWeeks=Object.assign({},cloud.planWeeks,local.planWeeks); // frozen/immutable union
+  out.checkIns=mergeByTs(local.checkIns,cloud.checkIns);
+  out.weeks=mergeByTs(local.weeks,cloud.weeks);
+  var src=new Date(local.updatedAt||0)>=new Date(cloud.updatedAt||0)?local:cloud; // singletons → last-write-wins
+  out.activePlan=src.activePlan;
+  out.planStartDate=src.planStartDate||local.planStartDate||cloud.planStartDate;
+  out.groceryState=src.groceryState;
+  out.updatedAt=new Date().toISOString();
+  return out;
+}
+// Copy a resolved state into APP + refresh the GS/CI mirrors. Shared by init and sync.
+function adoptState(s){
+  APP.days=s.days||{};APP.weeks=s.weeks||{};APP.checkIns=s.checkIns||{};
+  APP.groceryState=s.groceryState||null;APP.planStartDate=s.planStartDate||todayKey();
+  APP.planWeeks=s.planWeeks||{};APP.activePlan=s.activePlan||null;APP.updatedAt=s.updatedAt||APP.updatedAt;
+  if(APP.groceryState)GS=Object.assign({},APP.groceryState);
+  var wk=weekKey();
+  CI=(APP.checkIns&&APP.checkIns[wk])?Object.assign({},APP.checkIns[wk]):{};
+}
 async function cloudPull(){
-  try{var r=await fetch(SUPABASE_URL+"/rest/v1/app_sync?user_id=eq.rodney&select=state,updated_at",{headers:{"apikey":SUPABASE_KEY,"Authorization":"Bearer "+SUPABASE_KEY}});var rows=await r.json();if(rows&&rows.length)return{state:rows[0].state,ts:rows[0].updated_at};}
+  try{
+    var r=await authedFetch(SUPABASE_URL+"/rest/v1/app_sync?user_id=eq.rodney&select=state,updated_at",{});
+    if(!r||!r.ok)return null;
+    var rows=await r.json();if(rows&&rows.length)return{state:rows[0].state,ts:rows[0].updated_at};
+  }
   catch(e){console.warn("Cloud pull failed",e);}
   return null;
 }
@@ -224,13 +363,42 @@ async function loadBest(){
   if(!local)return cloud.state;
   return new Date(cloud.ts)>new Date(local.updatedAt||0)?cloud.state:local;
 }
-async function saveAll(){
+// Local write is instant + offline-safe; cloud merge-push is debounced so a tap never waits on the network.
+var saveChain=Promise.resolve();
+var syncTimer=null;
+function saveAll(){
   freezeCurrentWeekIfNeeded(); // stamp the plan in effect for this week before persisting
+  var tk=todayKey();if(APP.days[tk])APP.days[tk].ts=Date.now();
+  var wk=weekKey();if(APP.weeks[wk])APP.weeks[wk].ts=Date.now();
   APP.updatedAt=new Date().toISOString();
-  var state=serializeState();
-  lsSet("tlg",state);
-  if(syncEnabled()){await cloudPush(state);setSyncStatus("synced");}
-  else{setSyncStatus("local");}
+  lsSet("tlg",serializeState());
+  setSyncStatus(!syncEnabled()?"local":(!sessionValid()?"signedout":"…"));
+  scheduleCloudSync();
+}
+function scheduleCloudSync(){
+  if(!syncEnabled())return;
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(flushCloudSync,1500);
+}
+function flushCloudSync(){
+  clearTimeout(syncTimer);syncTimer=null;
+  saveChain=saveChain.then(doCloudSync).catch(function(){});
+  return saveChain;
+}
+// Pull → merge → push. Re-renders only if the merge pulled in changes from another device.
+async function doCloudSync(){
+  if(!syncEnabled()||!sessionValid())return;
+  try{
+    var cloud=await cloudPull();
+    var merged=cloud?mergeState(serializeState(),cloud.state):serializeState();
+    var before=JSON.stringify([APP.days,APP.checkIns,APP.weeks,APP.groceryState,APP.activePlan,APP.planStartDate]);
+    adoptState(merged);
+    var after=JSON.stringify([APP.days,APP.checkIns,APP.weeks,APP.groceryState,APP.activePlan,APP.planStartDate]);
+    lsSet("tlg",merged);
+    await cloudPush(merged);
+    setSyncStatus("synced");
+    if(before!==after)render(); // reflect merged-in changes without clobbering active input on no-ops
+  }catch(e){setSyncStatus("offline");}
 }
 
 // ── NTFY ───────────────────────────────────────────────────────────────────────
@@ -666,8 +834,11 @@ function setSyncStatus(s){
   var dot=document.getElementById("sync-dot");
   var lbl=document.getElementById("sync-lbl");
   if(!dot)return;
-  dot.style.background=s==="synced"?"var(--sage)":s==="offline"?"var(--warm)":"var(--muted)";
-  lbl.textContent=s==="synced"?"Synced":s==="offline"?"Offline":s==="local"?"Local only":"…";
+  dot.style.background=s==="synced"?"var(--sage)":(s==="offline"||s==="signedout")?"var(--warm)":"var(--muted)";
+  lbl.textContent=s==="synced"?"Synced":s==="offline"?"Offline":s==="local"?"Local only":s==="signedout"?"Sign in to sync":"…";
+  lbl.style.cursor=s==="signedout"?"pointer":"default";
+  lbl.style.textDecoration=s==="signedout"?"underline":"none";
+  lbl.onclick=s==="signedout"?function(){UI.tab="login";render();}:null;
 }
 
 // ── RENDER ─────────────────────────────────────────────────────────────────────
@@ -723,6 +894,12 @@ function render(){
 
   var wrap=h("div",{class:"wrap"},[]);
   app.appendChild(wrap);
+
+  // ── LOGIN ──
+  if(UI.tab==="login"){
+    wrap.appendChild(makeLoginScreen());
+    return;
+  }
 
   // ── TODAY TAB ──
   if(UI.tab==="today"){
@@ -1299,6 +1476,39 @@ function startRestTimer(secs){
 }
 
 // ── CHECK-IN TAB ──
+// Email + password sign-in screen (soft gate — the app still works offline without it).
+function makeLoginScreen(){
+  var wrap2=h("div",{});
+  wrap2.appendChild(h("div",{class:"sec-label",style:{margin:"0 0 16px"}},"Sign in to sync"));
+  var card=h("div",{class:"card"});
+  card.appendChild(h("div",{style:{fontSize:"13px",color:"var(--muted)",marginBottom:"14px",lineHeight:"1.5"}},"Sign in to sync your data across your devices. Your data stays on this device even when you're signed out."));
+  card.appendChild(h("label",{style:{fontSize:"11px",color:"var(--muted)",display:"block",marginBottom:"4px"}},"Email"));
+  var emailIn=makeInput("email",UI.loginEmail||sessionEmail()||"rodney.l.weathers@gmail.com",function(v){UI.loginEmail=v;},{width:"100%",marginBottom:"12px"});
+  emailIn.setAttribute("autocomplete","username");
+  card.appendChild(emailIn);
+  card.appendChild(h("label",{style:{fontSize:"11px",color:"var(--muted)",display:"block",marginBottom:"4px"}},"Password"));
+  var pwIn=makeInput("password",UI.loginPw||"",function(v){UI.loginPw=v;},{width:"100%",marginBottom:"12px"});
+  pwIn.setAttribute("autocomplete","current-password");
+  card.appendChild(pwIn);
+  if(UI.authError)card.appendChild(h("div",{style:{fontSize:"12px",color:"var(--warm)",marginBottom:"10px"}},UI.authError));
+  var signInBtn=h("button",{class:"btn-primary",style:{width:"100%",padding:"12px",fontSize:"14px"}});
+  signInBtn.textContent="Sign in";
+  signInBtn.addEventListener("click",function(){
+    var em=(UI.loginEmail||emailIn.value||"").trim(),pw=(UI.loginPw||pwIn.value||"");
+    if(!em||!pw){UI.authError="Enter your email and password.";render();return;}
+    signInBtn.textContent="Signing in…";signInBtn.disabled=true;
+    authSignIn(em,pw).then(function(){
+      UI.authError=null;UI.loginPw="";UI.tab="today";setSyncStatus("…");render();flushCloudSync();
+    }).catch(function(e){
+      UI.authError=e.message||"Sign-in failed — check your email and password.";render();
+    });
+  });
+  card.appendChild(signInBtn);
+  wrap2.appendChild(card);
+  wrap2.appendChild(h("button",{class:"btn-ghost",style:{width:"100%",padding:"10px",marginTop:"10px",fontSize:"13px"},onclick:function(){UI.tab="today";UI.authError=null;render();}},"Not now — keep using offline"));
+  return wrap2;
+}
+
 // Paste-to-import a Claude-generated plan JSON. Validate → preview → apply.
 function makeImportCard(){
   var card=h("div",{class:"card",style:{marginBottom:"16px"}});
@@ -1368,7 +1578,7 @@ function makeCheckinTab(){
       })
     );
   }
-  function saveCI(){APP.checkIns[wk]=Object.assign({},CI);saveAll();render();}
+  function saveCI(){CI.ts=Date.now();APP.checkIns[wk]=Object.assign({},CI);saveAll();render();}
 
   var wIn=makeInput("number",CI.weight,function(v){CI.weight=v;},{width:"100px"});
   wrap2.appendChild(field("Weight (lbs)",h("div",{style:{display:"flex",alignItems:"center",gap:"8px"}},[wIn,h("span",{style:{fontSize:"13px",color:"var(--muted)"}},"lbs")])));
@@ -1386,6 +1596,19 @@ function makeCheckinTab(){
   notesEl.addEventListener("input",function(){CI.notes=notesEl.value;});
   wrap2.appendChild(field("Issues or notes",notesEl));
   wrap2.appendChild(h("button",{class:"btn-primary",style:{width:"100%",padding:"12px",fontSize:"14px",marginTop:"4px"},onclick:function(){saveCI();}},"Save check-in"));
+  // Account / sign-out
+  wrap2.appendChild(h("div",{class:"sec-label",style:{margin:"24px 0 10px"}},"Account"));
+  if(sessionValid()){
+    wrap2.appendChild(h("div",{class:"card",style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},[
+      h("div",{style:{fontSize:"12.5px",color:"var(--muted)"}},"Signed in as "+(sessionEmail()||"you")),
+      h("button",{class:"btn-ghost",style:{flex:"none",padding:"6px 12px",fontSize:"12px"},onclick:function(){authSignOut();}},"Sign out"),
+    ]));
+  } else {
+    wrap2.appendChild(h("div",{class:"card",style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},[
+      h("div",{style:{fontSize:"12.5px",color:"var(--muted)"}},"Not signed in — syncing is off"),
+      h("button",{class:"btn-primary",style:{flex:"none",padding:"6px 12px",fontSize:"12px"},onclick:function(){UI.tab="login";render();}},"Sign in"),
+    ]));
+  }
   return wrap2;
 }
 
@@ -1631,10 +1854,13 @@ function makeInput(type,val,onChange,style){
 
 // ── INIT ───────────────────────────────────────────────────────────────────────
 (async function(){
+  loadSession();
   // Load local data immediately so app never hangs
+  var hadLocal=false;
   try {
     var local = lsGet("tlg");
     if(local){
+      hadLocal=!!(local.days&&Object.keys(local.days).length);
       APP.days=local.days||{};
       APP.weeks=local.weeks||{};
       APP.checkIns=local.checkIns||{};
@@ -1651,37 +1877,31 @@ function makeInput(type,val,onChange,style){
     }
   } catch(e){ console.warn("Local load failed",e); }
 
+  // Fresh device (no local data) that needs a login to pull → land on the sign-in screen.
+  if(!hadLocal && syncEnabled() && !sessionValid()) UI.tab="login";
+
   // Render immediately with local data
   render();
-  setSyncStatus(navigator.onLine?(syncEnabled()?"synced":"local"):"offline");
+  setSyncStatus(navigator.onLine?(!syncEnabled()?"local":(sessionValid()?"synced":"signedout")):"offline");
 
-  // Then try cloud sync in background — won't block the UI (pull is read-only, always safe)
-  if(navigator.onLine){
+  // Then merge cloud in the background (read-only pull; merge never clobbers unsynced local edits)
+  if(navigator.onLine && syncEnabled() && sessionValid()){
     try {
       var cloud = await cloudPull();
       if(cloud && cloud.state){
-        var localTs = new Date(APP.updatedAt||0);
-        var cloudTs = new Date(cloud.ts||0);
-        if(cloudTs > localTs){
-          var s=cloud.state;
-          APP.days=s.days||APP.days;
-          APP.weeks=s.weeks||APP.weeks;
-          APP.checkIns=s.checkIns||APP.checkIns;
-          APP.groceryState=s.groceryState||APP.groceryState;
-          APP.planStartDate=s.planStartDate||APP.planStartDate;
-          APP.planWeeks=s.planWeeks||APP.planWeeks;
-          APP.activePlan=s.activePlan||APP.activePlan;
-          APP.updatedAt=s.updatedAt||cloud.ts||APP.updatedAt;
-          if(APP.groceryState)GS=Object.assign({},APP.groceryState);
-          if(APP.checkIns){var wk2=weekKey();if(APP.checkIns[wk2])CI=Object.assign({},APP.checkIns[wk2]);}
-          lsSet("tlg",serializeState());
-          render(); // re-render with fresher cloud data
-        }
-        setSyncStatus(syncEnabled()?"synced":"local");
+        var merged = mergeState(serializeState(), cloud.state);
+        adoptState(merged);
+        lsSet("tlg", merged);
+        render(); // re-render with merged cloud data
+        setSyncStatus("synced");
+      } else {
+        setSyncStatus("signedout");
       }
     } catch(e){ console.warn("Cloud sync failed",e); setSyncStatus("offline"); }
   }
 
   initSynced=true; // safe to freeze week snapshots now that local+cloud have settled
+  // Flush any pending debounced sync when the app is backgrounded (iOS suspends PWAs quickly).
+  document.addEventListener("visibilitychange",function(){if(document.visibilityState==="hidden")flushCloudSync();});
   scheduleDay();
 })();
