@@ -1,0 +1,58 @@
+name: Deploy to GitHub Pages
+
+# Builds the Vite app and publishes it to GitHub Pages on every push to main.
+# The correct base path is derived automatically from the repo name, so this works
+# whether the repo is a project site (user.github.io/<repo>/) or a user site (user.github.io).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deploy; don't cancel an in-progress run mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Compute base path
+        id: base
+        run: |
+          REPO="${{ github.event.repository.name }}"
+          OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          if [ "$REPO" = "${OWNER}.github.io" ]; then
+            echo "base=/" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=/$REPO/" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build
+        run: npm run build
+        env:
+          VITE_BASE: ${{ steps.base.outputs.base }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
