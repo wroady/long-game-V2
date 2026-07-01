@@ -83,7 +83,7 @@ function buildNotifications(plan) {
   const out = [];
 
   if (!plan) {
-    out.push({ hh: 6, mm: 15, title: 'The Long Game', body: `${DAY_FULL[dayAbbr]} — open the app to set up today.` });
+    out.push({ hh: 6, mm: 15, tag: 'memo', title: 'The Long Game', body: `${DAY_FULL[dayAbbr]} — open the app to set up today.` });
     return out;
   }
 
@@ -95,7 +95,7 @@ function buildNotifications(plan) {
   const first = supps[0];
   let summary = `${DAY_FULL[dayAbbr]}. Today: ${workoutTitle}. Protein ${targets.prot}g · water ${targets.water}oz.`;
   if (first) summary += ` First: ${first.label}${first.time ? ' (' + first.time + ')' : ''}.`;
-  out.push({ hh: 6, mm: 15, title: '☀️ Good morning', body: summary });
+  out.push({ hh: 6, mm: 15, tag: 'sunny', title: 'Good morning', body: summary });
 
   // Supplement stacks — Morning (7:00–11:00) / Midday (11:00–16:00) / Evening (16:00–20:30).
   // The pre-7:00 supp (e.g. L-glutamine) is covered by the summary; bedtime supp goes to the evening nudge.
@@ -108,19 +108,19 @@ function buildNotifications(plan) {
     const inStack = supps.filter((s) => s.tMin > st.lo - 1 && s.tMin <= st.hi);
     if (!inStack.length) continue;
     const sendMin = inStack[0].tMin;
-    out.push({ hh: Math.floor(sendMin / 60), mm: sendMin % 60, title: `💊 ${st.name}`, body: inStack.map((s) => s.label).join(' · ') });
+    out.push({ hh: Math.floor(sendMin / 60), mm: sendMin % 60, tag: 'pill', title: st.name, body: inStack.map((s) => s.label).join(' · ') });
   }
 
   // Meal nudges — lunch (11:30) + snack (15:30). Breakfast is folded into the morning summary.
-  out.push({ hh: 11, mm: 30, title: '🍽️ Lunch', body: 'Log lunch and see today’s recommended prep option.' });
-  out.push({ hh: 15, mm: 30, title: '🥜 Snack', body: 'Snack time — open The Long Game for today’s pick (~30g protein).' });
+  out.push({ hh: 11, mm: 30, tag: 'fork_and_knife', title: 'Lunch', body: 'Log lunch and see today’s recommended prep option.' });
+  out.push({ hh: 15, mm: 30, tag: 'peanuts', title: 'Snack', body: 'Snack time — open The Long Game for today’s pick (~30g protein).' });
 
   // Evening / bedtime (21:00) — bedtime supp(s) + tomorrow heads-up.
   const bedSupps = supps.filter((s) => s.tMin >= 1230);
   const tomorrowTitle = (plan.workouts && plan.workouts[tomorrow] && plan.workouts[tomorrow].title) || 'Rest / mobility';
   let evening = bedSupps.length ? `${bedSupps.map((s) => s.label).join(' · ')}. ` : '';
   evening += `Tomorrow: ${tomorrowTitle}.`;
-  out.push({ hh: 21, mm: 0, title: '🌙 Wind down', body: evening });
+  out.push({ hh: 21, mm: 0, tag: 'crescent_moon', title: 'Wind down', body: evening });
 
   return out;
 }
@@ -133,15 +133,21 @@ async function main() {
   notes.sort((a, b) => a.hh * 60 + a.mm - (b.hh * 60 + b.mm));
 
   console.log(`[schedule-notifications] ${todayKeyET()} (${TZ}) — plan source: ${plan ? (state.planWeeks && state.planWeeks[weekSundayKey()] ? 'frozen week' : 'activePlan') : 'none'} — ${notes.length} reminders${DRY ? ' (dry-run)' : ''}`);
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const GRACE = 20 * 60; // recently-past reminders (cron drift) go out immediately; older are skipped as stale
   for (const n of notes) {
     const at = etEpochToday(n.hh, n.mm);
     const when = `${String(n.hh).padStart(2, '0')}:${String(n.mm).padStart(2, '0')} ET`;
     if (DRY) {
-      console.log(`  ${when}  [${n.title}] ${n.body}   (At=${at})`);
+      console.log(`  ${when}  [:${n.tag || ''}: ${n.title}] ${n.body}   (At=${at})`);
       continue;
     }
-    const r = await fetch(NTFY_TOPIC, { method: 'POST', headers: { 'Content-Type': 'text/plain', Title: n.title, At: String(at) }, body: n.body });
-    console.log(`  ${when}  ${r.ok ? 'sent' : 'FAILED ' + r.status}  [${n.title}]`);
+    if (at < nowEpoch - GRACE) { console.log(`  ${when}  skipped (already past)  [${n.title}]`); continue; }
+    const headers = { 'Content-Type': 'text/plain; charset=utf-8', Title: n.title, At: String(at) };
+    if (n.tag) headers.Tags = n.tag; // ntfy renders emoji from ASCII shortcodes (headers can't hold emoji)
+    if (at <= nowEpoch) delete headers.At; // ntfy rejects past timestamps → deliver now instead
+    const r = await fetch(NTFY_TOPIC, { method: 'POST', headers, body: n.body });
+    console.log(`  ${when}  ${r.ok ? (headers.At ? 'scheduled' : 'sent now') : 'FAILED ' + r.status + ' ' + (await r.text())}  [${n.title}]`);
   }
 }
 
