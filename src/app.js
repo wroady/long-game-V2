@@ -482,6 +482,10 @@ function resolvePlan(wk){
 // Current-week resolved plan. render() sets PLAN once; other reads fall back to a fresh resolve.
 var PLAN=null;
 function curPlan(){return PLAN||resolvePlan(weekKey());}
+// Resolve a recipe by id: the current plan's imported recipes win, else the built-in recipe book.
+function getRecipe(rid){var p=curPlan();return (p&&p.recipes&&p.recipes[rid])||RECIPES[rid];}
+// All recipes available for selection (built-ins + any imported this week).
+function allRecipes(){var p=curPlan();return Object.assign({},RECIPES,(p&&p.recipes)||{});}
 
 // Freeze the current week's resolved plan the first time we persist within that week (history).
 function freezeCurrentWeekIfNeeded(){
@@ -541,6 +545,14 @@ function parsePlanImport(text){
   if(doc.supplements!=null){
     if(!Array.isArray(doc.supplements))errors.push("supplements must be an array.");
     else doc.supplements.forEach(function(s,i){if(!s||!s.id)errors.push("supplements["+i+"] missing id.");});
+  }
+  if(doc.recipes!=null){
+    if(typeof doc.recipes!=="object"||Array.isArray(doc.recipes))errors.push("recipes must be an object keyed by recipe id.");
+    else Object.keys(doc.recipes).forEach(function(rid){
+      var rec=doc.recipes[rid];
+      if(!rec||typeof rec!=="object")errors.push('recipes.'+rid+' must be an object.');
+      else if(!rec.label)errors.push('recipes.'+rid+' needs a "label".');
+    });
   }
   if(doc.targets!=null&&(typeof doc.targets!=="object"||Array.isArray(doc.targets)))errors.push("targets must be an object.");
   if(errors.length)return {ok:false,errors:errors};
@@ -783,7 +795,7 @@ function suggestLunch(){
 // breakfast/lunch/snack from the day-aware recommendation engines.
 function plannedMeal(m,ws,today){
   if(m.id==="dinner"){
-    var r=RECIPES[ws.dinnerPlan[today]];
+    var r=getRecipe(ws.dinnerPlan[today]);
     return r?{name:r.label,cal:r.cal,prot:r.rprot}:null;
   }
   if(m.id==="breakfast"){var b=recommendBreakfast();return b?{name:b.option.label,cal:b.option.cal,prot:b.option.prot}:null;}
@@ -1047,7 +1059,7 @@ function makeMealSugCard(mealType,option,reason,cal,prot,onDismiss){
 
 // Popup showing a dinner recipe's macros + ingredients. Appended to <body> so render() can't clobber it.
 function showRecipeModal(rid){
-  var r=RECIPES[rid];
+  var r=getRecipe(rid);
   if(!r)return;
   var existing=document.getElementById("recipe-modal");if(existing)existing.remove();
   function close(){var m=document.getElementById("recipe-modal");if(m)m.remove();}
@@ -1063,14 +1075,22 @@ function showRecipeModal(rid){
       ]));
     }
   });
+  var macros=proteinLabel+" · "+r.cal+" cal · "+r.rprot+"g protein"+(r.servings?" · "+r.servings:"");
+  var stepsEl=(Array.isArray(r.steps)&&r.steps.length)?h("div",{},[
+    h("div",{style:{fontFamily:"var(--font-d)",fontSize:"12px",letterSpacing:".06em",textTransform:"uppercase",color:"var(--sage)",marginTop:"20px"}},"Method"),
+    h("ol",{style:{margin:"8px 0 0",paddingLeft:"20px"}},r.steps.map(function(st){return h("li",{style:{fontSize:"13.5px",color:"var(--text)",padding:"3px 0",lineHeight:"1.45"}},st);})),
+  ]):"";
+  var tipEl=r.tip?h("div",{style:{marginTop:"16px",background:"rgba(124,148,115,0.1)",borderRadius:"8px",padding:"10px 12px",fontSize:"13px",color:"var(--text)",lineHeight:"1.45"}},"💡 "+r.tip):"";
   var card=h("div",{style:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:"16px",padding:"20px",maxWidth:"440px",width:"92%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 12px 40px rgba(0,0,0,.5)"},onclick:function(e){e.stopPropagation();}},[
     h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"12px"}},[
       h("div",{style:{fontFamily:"var(--font-d)",fontSize:"20px",color:"var(--text)",lineHeight:"1.2"}},r.label),
       h("button",{style:{flexShrink:0,background:"none",border:"none",color:"var(--muted)",fontSize:"26px",cursor:"pointer",lineHeight:"1",padding:"0 4px"},onclick:close},"×"),
     ]),
-    h("div",{style:{fontSize:"13px",color:"var(--sage)",marginTop:"6px"}},proteinLabel+" · "+r.cal+" cal · "+r.rprot+"g protein"),
+    h("div",{style:{fontSize:"13px",color:"var(--sage)",marginTop:"6px"}},macros),
     h("div",{style:{fontFamily:"var(--font-d)",fontSize:"12px",letterSpacing:".06em",textTransform:"uppercase",color:"var(--sage)",marginTop:"18px"}},"Ingredients"),
     h("div",{},sections.length?sections:[h("div",{style:{fontSize:"13px",color:"var(--muted)",marginTop:"8px"}},"No ingredient list for this recipe.")]),
+    stepsEl,
+    tipEl,
   ]);
   var overlay=h("div",{id:"recipe-modal",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"200",padding:"16px"},onclick:close},[card]);
   document.body.appendChild(overlay);
@@ -1080,7 +1100,7 @@ function makeWeekStrip(ws,today){
   var days=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   return h("div",{style:{display:"flex",gap:"8px",overflowX:"auto",paddingBottom:"4px",marginBottom:"16px"}},days.map(function(day){
     var rid=ws.dinnerPlan[day];
-    var r=RECIPES[rid];
+    var r=getRecipe(rid);
     var isToday=day===today;
     return h("div",{style:{minWidth:"92px",background:isToday?"var(--card-strong)":"var(--card)",border:isToday?"1px solid var(--sage)":"1px solid var(--line)",borderRadius:"10px",padding:"10px",flexShrink:0,cursor:r?"pointer":"default"},onclick:r?function(){showRecipeModal(rid);}:null},[
       h("div",{style:{fontSize:"11px",color:"var(--muted)",marginBottom:"4px"}},day),
@@ -1152,7 +1172,7 @@ function makeMealCard(m,dl,adj,ws,todayAbbr){
     if(planned){
       // Dinner's planned meal is a recipe — make its name tap to open the recipe popup.
       var dinnerRid=(m.id==="dinner"&&ws&&ws.dinnerPlan)?ws.dinnerPlan[todayAbbr]:null;
-      var hasRecipe=dinnerRid&&RECIPES[dinnerRid];
+      var hasRecipe=dinnerRid&&getRecipe(dinnerRid);
       var nameEl=hasRecipe
         ? h("div",{style:{fontSize:"14px",color:"var(--text)",marginBottom:"2px",cursor:"pointer"},onclick:function(){showRecipeModal(dinnerRid);}},[planned.name+" ",h("span",{style:{color:"var(--sage)",fontSize:"12px"}},"· recipe ›")])
         : h("div",{style:{fontSize:"14px",color:"var(--text)",marginBottom:"2px"}},planned.name);
@@ -1708,7 +1728,7 @@ function makeGroceryTab(){
   else if(GS.step===2){
     var have=new Set(Object.keys(GS.inventory).filter(function(k){return GS.inventory[k].have&&!GS.inventory[k].low;}));
     var low2=new Set(Object.keys(GS.inventory).filter(function(k){return GS.inventory[k].have&&GS.inventory[k].low;}));
-    var recipeList=Object.entries(RECIPES).map(function(e){return{id:e[0],r:e[1]};}).sort(function(a,b){
+    var recipeList=Object.entries(allRecipes()).map(function(e){return{id:e[0],r:e[1]};}).sort(function(a,b){
       var as=have.has(a.r.prot)?0:low2.has(a.r.prot)?1:2;
       var bs=have.has(b.r.prot)?0:low2.has(b.r.prot)?1:2;
       return as-bs;
@@ -1717,7 +1737,7 @@ function makeGroceryTab(){
     wrap2.appendChild(h("div",{style:{fontSize:"12.5px",color:"var(--muted)",marginBottom:"16px"}},"Proteins you have are listed first. Pick any meal for each night."));
     ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].forEach(function(day){
       var rid=GS.dinnerPlan[day];
-      var r=RECIPES[rid];
+      var r=getRecipe(rid);
       var dayHave=r&&have.has(r.prot);
       var dayLow=r&&low2.has(r.prot);
       var card=h("div",{class:"card",style:{marginBottom:"8px",padding:"12px 16px"}});
@@ -1750,7 +1770,7 @@ function makeGroceryTab(){
   else if(GS.step===3){
     var needed={produce:new Set(),pantry:new Set(),dairy:new Set(),beverages:new Set(),supplements:new Set()};
     Object.values(GS.dinnerPlan).forEach(function(rid){
-      var r=RECIPES[rid];if(!r)return;
+      var r=getRecipe(rid);if(!r)return;
       Object.keys(r.ing).forEach(function(cat){r.ing[cat].forEach(function(item){if(needed[cat])needed[cat].add(item);});});
     });
     Object.keys(PANTRY_STAPLES).forEach(function(cat){PANTRY_STAPLES[cat].forEach(function(item){if(needed[cat])needed[cat].add(item);});});
@@ -1781,7 +1801,7 @@ function makeGroceryTab(){
     var haveP=new Set(Object.keys(GS.inventory).filter(function(k){return GS.inventory[k].have&&!GS.inventory[k].low;}));
     var finalSections={"\uD83E\uDD69 Proteins":[]};
     Object.values(GS.dinnerPlan).forEach(function(rid){
-      var r=RECIPES[rid];if(!r)return;
+      var r=getRecipe(rid);if(!r)return;
       if(!haveP.has(r.prot)){
         var p=PROTEINS_ALL.find(function(x){return x.id===r.prot;});
         if(p){var lbl=p.label+" (for dinner)";if(finalSections["\uD83E\uDD69 Proteins"].indexOf(lbl)===-1)finalSections["\uD83E\uDD69 Proteins"].push(lbl);}
@@ -1789,7 +1809,7 @@ function makeGroceryTab(){
     });
     var ingNeeded={produce:new Set(),pantry:new Set(),dairy:new Set(),beverages:new Set(),supplements:new Set()};
     Object.values(GS.dinnerPlan).forEach(function(rid){
-      var r=RECIPES[rid];if(!r)return;
+      var r=getRecipe(rid);if(!r)return;
       Object.keys(r.ing).forEach(function(cat){r.ing[cat].forEach(function(item){if(!GS.pantryHave[item]&&ingNeeded[cat])ingNeeded[cat].add(item);});});
     });
     Object.keys(PANTRY_STAPLES).forEach(function(cat){PANTRY_STAPLES[cat].forEach(function(item){if(!GS.pantryHave[item]&&ingNeeded[cat])ingNeeded[cat].add(item);});});

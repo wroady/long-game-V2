@@ -101,7 +101,22 @@ All top-level sections are optional; omitted sections carry forward from the cur
           "type":"strength", "cue":"Hip hinge — chest tall", "weight":"25 lb KB" }
       ] }
   },
-  "dinnerPlan": { "Mon":"chicken_baked", "Fri":"cod_lemon" }   // recipe ids must exist in RECIPES
+  "dinnerPlan": { "Mon":"chicken_baked", "Fri":"cod_lemon" },  // recipe ids: built-in OR defined in "recipes" below
+  "recipes": {
+    "cod_lemon": {
+      "label": "Lemon herb baked cod + asparagus",
+      "prot": "cod", "cal": 280, "rprot": 40, "servings": "Serves 2",
+      "ing": { "produce": ["asparagus","lemon","garlic","fresh parsley"], "pantry": ["olive oil","paprika"] },
+      "steps": [
+        "Preheat oven to 400°F.",
+        "Pat cod dry; season with salt, paprika, and minced garlic.",
+        "Arrange asparagus and cod on a sheet pan; drizzle with olive oil.",
+        "Squeeze lemon over; bake 12–15 min until cod flakes.",
+        "Top with fresh parsley and serve."
+      ],
+      "tip": "Sear an extra fillet if you want a cold-fish salad for tomorrow's lunch."
+    }
+  }
 }
 ```
 
@@ -110,11 +125,18 @@ gates when a supp appears; `time` is `"8:05 AM"` format (the app derives minute 
 `targets.water` pins water (stops the auto-ramp). Importing for `"current"` overwrites the live
 week's plan overlay — your logged data is untouched. Unknown fields are ignored (forward-compatible).
 
+**Recipes**: any `dinnerPlan` recipe id must be a built-in id *or* defined in `recipes`. A recipe
+object is `{ label, prot (protein-source id), cal, rprot, servings?, ing:{produce[],pantry[],dairy[]}, steps:[...], tip? }`.
+Tapping a dinner in the app opens the recipe popup showing macros, ingredients, and the `steps`
+(a numbered "Method") + `tip`. Include full recipes in the weekly update so the popups are complete;
+imported recipes override built-ins of the same id for that week.
+
 ### Prompt template for Claude
 
-> Produce a `tlgPlan: 1` JSON for The Long Game for **week N** targeting `"next"`. Include only what
-> changes from last week. Use existing supplement ids and recipe ids where possible. Weekday keys
-> Mon–Sun; weights/reps as strings; times like "8:05 AM". Output only the JSON.
+> Produce a `tlgPlan: 1` JSON for The Long Game for **week N** targeting `"next"`. Include the full
+> week: `targets`, `supplements` (with `introWeek`), `workouts` (Mon–Sun, exercises with sets/reps/weight),
+> `dinnerPlan`, and a `recipes` entry **with full `steps` and a `tip`** for every dinner in the plan.
+> Weekday keys Mon–Sun; weights/reps as strings; times like "8:05 AM". Output only the JSON.
 
 ## Notifications (server-side)
 
