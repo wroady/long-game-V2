@@ -157,8 +157,10 @@ const PANTRY_STAPLES={
 };
 
 // ── HELPERS ────────────────────────────────────────────────────────────────────
-function todayKey(){return new Date().toISOString().slice(0,10)}
-function weekKey(){var d=new Date();d.setDate(d.getDate()-d.getDay());return d.toISOString().slice(0,10)}
+// Date keys are LOCAL-date, not UTC. toISOString() would file an 8pm-ET entry under tomorrow's key.
+function fmtLocalDate(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
+function todayKey(){return fmtLocalDate(new Date())}
+function weekKey(){var d=new Date();d.setDate(d.getDate()-d.getDay());return fmtLocalDate(d)}
 function dayAbbr(){return DAYS[new Date().getDay()]}
 function nowMin(){var d=new Date();return d.getHours()*60+d.getMinutes()}
 function h(tag,attrs,children){
@@ -449,7 +451,7 @@ function parseTime(str){
   return h*60+mn;
 }
 function weekStartOf(dateStr){var d=new Date(dateStr+"T00:00:00Z");d.setUTCDate(d.getUTCDate()-d.getUTCDay());return d.toISOString().slice(0,10);}
-function nextSundayKey(){var d=new Date();d.setDate(d.getDate()-d.getDay()+7);return d.toISOString().slice(0,10);}
+function nextSundayKey(){var d=new Date();d.setDate(d.getDate()-d.getDay()+7);return fmtLocalDate(d);}
 
 // Uncapped program-week number (1,2,3,…) for a given week-Sunday key, measured from planStartDate's week.
 function programWeek(wk){
