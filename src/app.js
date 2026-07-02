@@ -1531,6 +1531,64 @@ function makeLoginScreen(){
   return wrap2;
 }
 
+// Logged-adherence stats for a week (Sunday key): from the daily meal/workout logs.
+function weekDailyStats(wkKey){
+  var start=Date.parse(wkKey+"T00:00:00Z");
+  var cal=0,prot=0,daysLogged=0,workoutsDone=0;
+  Object.keys(APP.days).forEach(function(dk){
+    var diff=(Date.parse(dk+"T00:00:00Z")-start)/86400000;
+    if(diff<0||diff>6)return;
+    var day=APP.days[dk];if(!day)return;
+    var any=false;
+    ["breakfast","lunch","snack","dinner"].forEach(function(id){
+      var e=day.meals&&day.meals[id];
+      if(e&&e.status==="eaten"){cal+=e.actualCal||0;prot+=e.actualProtein||0;any=true;}
+    });
+    if(any)daysLogged++;
+    if(day.workoutDone)workoutsDone++;
+  });
+  return {daysLogged:daysLogged,avgProt:daysLogged?Math.round(prot/daysLogged):0,avgCal:daysLogged?Math.round(cal/daysLogged):0,workoutsDone:workoutsDone};
+}
+
+// Plain-text check-in + adherence summary to paste into Claude for next week's plan.
+function buildCheckinExport(){
+  var weeks=Object.keys(APP.checkIns||{}).sort().reverse();
+  var out=["THE LONG GAME — CHECK-IN SUMMARY","Program week "+programWeek(weekKey())+" · Plan started "+APP.planStartDate,"Generated "+todayKey(),""];
+  if(!weeks.length)out.push("(No check-ins recorded yet.)");
+  weeks.slice(0,12).forEach(function(wk){
+    var c=APP.checkIns[wk]||{},st=weekDailyStats(wk);
+    out.push("WEEK OF "+wk+(wk===weekKey()?" (current)":""));
+    if(c.weight)out.push("• Weight: "+c.weight+" lbs");
+    var ratings=[];
+    if(c.sleep)ratings.push("Sleep "+c.sleep+"/5");
+    if(c.energy)ratings.push("Energy "+c.energy+"/5");
+    if(c.gut)ratings.push("Gut "+c.gut+"/5");
+    if(ratings.length)out.push("• "+ratings.join(" · "));
+    if(c.workouts!=null&&c.workouts!=="")out.push("• Workouts completed (self-report): "+c.workouts);
+    if(c.protein)out.push("• Hit protein target: "+c.protein);
+    out.push("• Logged: "+st.daysLogged+" days"+(st.daysLogged?" · avg "+st.avgProt+"g protein · avg "+st.avgCal+" cal/day":"")+" · workout days done: "+st.workoutsDone);
+    if(c.notes)out.push("• Notes: "+c.notes);
+    out.push("");
+  });
+  return out.join("\n");
+}
+
+// Share/copy text — native share sheet on iOS (send to Notes/Messages) with a clipboard fallback.
+function shareText(title,text,copiedMsg){
+  if(navigator.share){navigator.share({title:title,text:text}).catch(function(){});}
+  else if(navigator.clipboard){navigator.clipboard.writeText(text).then(function(){alert(copiedMsg||"Copied.");}).catch(function(){alert(text);});}
+  else{alert(text);}
+}
+
+// Export card — copy check-ins for Claude.
+function makeExportCard(){
+  return h("div",{class:"card",style:{marginBottom:"16px"}},[
+    h("div",{style:{fontFamily:"var(--font-d)",fontSize:"14px",color:"var(--text)",marginBottom:"6px"}},"Share check-ins with Claude"),
+    h("div",{style:{fontSize:"12px",color:"var(--muted)",marginBottom:"10px",lineHeight:"1.5"}},"Copy your check-in history and logged adherence, then paste it to Claude when building next week's plan."),
+    h("button",{class:"btn-primary",style:{width:"100%",padding:"10px",fontSize:"13px"},onclick:function(){shareText("The Long Game check-ins",buildCheckinExport(),"Check-in summary copied — paste it to Claude.");}},"Copy / share check-ins"),
+  ]);
+}
+
 // Paste-to-import a Claude-generated plan JSON. Validate → preview → apply.
 function makeImportCard(){
   var card=h("div",{class:"card",style:{marginBottom:"16px"}});
@@ -1584,6 +1642,7 @@ function makeCheckinTab(){
   var wrap2=h("div",{});
   wrap2.appendChild(h("div",{class:"sec-label",style:{margin:"0 0 16px"}},"Weekly Check-In"));
   wrap2.appendChild(h("div",{style:{fontSize:"12.5px",color:"var(--muted)",marginBottom:"20px"}},saved?"\u2713 This week is saved.":"Fill in what you can — nothing is required."));
+  wrap2.appendChild(makeExportCard());
   wrap2.appendChild(makeImportCard());
 
   function field(label,content){
