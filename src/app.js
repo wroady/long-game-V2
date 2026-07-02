@@ -1695,6 +1695,14 @@ function makeCheckinTab(){
       h("div",{style:{fontSize:"12.5px",color:"var(--muted)"}},"Signed in as "+(sessionEmail()||"you")),
       h("button",{class:"btn-ghost",style:{flex:"none",padding:"6px 12px",fontSize:"12px"},onclick:function(){authSignOut();}},"Sign out"),
     ]));
+    wrap2.appendChild(h("div",{class:"card",style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"8px"}},[
+      h("div",{style:{fontSize:"12.5px",color:"var(--muted)"}},"Local data out of sync? Clear it and re-pull from cloud."),
+      h("button",{class:"btn-ghost",style:{flex:"none",padding:"6px 12px",fontSize:"12px"},onclick:function(){
+        if(!confirm("Clear this device's saved data and re-download from the cloud? Any unsynced offline changes will be lost."))return;
+        try{localStorage.removeItem("tlg");}catch(e){}
+        window.location.reload();
+      }},"Reset local"),
+    ]));
   } else {
     wrap2.appendChild(h("div",{class:"card",style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},[
       h("div",{style:{fontSize:"12.5px",color:"var(--muted)"}},"Not signed in — syncing is off"),
