@@ -605,7 +605,14 @@ function getDayLog(){
 }
 function getWeekState(){
   var k=weekKey();
-  if(!APP.weeks[k])APP.weeks[k]={dinnerPlan:Object.assign({},resolvePlan(k).dinnerPlan)};
+  var resolvedDinnerPlan=resolvePlan(k).dinnerPlan;
+  if(!APP.weeks[k]){APP.weeks[k]={ts:Date.now(),dinnerPlan:Object.assign({},resolvedDinnerPlan)};}
+  // dinnerPlan here is a pure derived cache (never user-edited) — resync it whenever a later plan
+  // import changes the resolved dinnerPlan, so "This week's dinners" doesn't keep showing stale data.
+  else if(JSON.stringify(APP.weeks[k].dinnerPlan)!==JSON.stringify(resolvedDinnerPlan)){
+    APP.weeks[k].dinnerPlan=Object.assign({},resolvedDinnerPlan);
+    APP.weeks[k].ts=Date.now();
+  }
   return APP.weeks[k];
 }
 
