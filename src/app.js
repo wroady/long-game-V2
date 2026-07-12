@@ -1568,10 +1568,36 @@ function weekDailyStats(wkKey){
   return {daysLogged:daysLogged,avgProt:daysLogged?Math.round(prot/daysLogged):0,avgCal:daysLogged?Math.round(cal/daysLogged):0,workoutsDone:workoutsDone};
 }
 
+// Resolve a dinnerPlan recipe id to a human label for a given frozen week (imported recipes win, else built-ins).
+function resolveDinnerLabel(wk,rid){
+  if(!rid)return null;
+  var pw=APP.planWeeks&&APP.planWeeks[wk];
+  var r=(pw&&pw.recipes&&pw.recipes[rid])||RECIPES[rid];
+  return r?r.label:rid;
+}
+// Recent dinners across the last few frozen weeks, so next week's plan doesn't repeat what was just cooked.
+function recentDinnersSummary(weeksBack){
+  var DAY_ORDER=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  var wks=Object.keys(APP.planWeeks||{}).sort().reverse().slice(0,weeksBack||3);
+  if(!wks.length)return [];
+  var out=["RECENT DINNERS (avoid repeating these next week)"];
+  wks.forEach(function(wk){
+    var pw=APP.planWeeks[wk];
+    if(!pw||!pw.dinnerPlan)return;
+    var line=DAY_ORDER.map(function(d){
+      var label=resolveDinnerLabel(wk,pw.dinnerPlan[d]);
+      return label?d+": "+label:null;
+    }).filter(Boolean).join(" · ");
+    if(line)out.push("Week of "+wk+" — "+line);
+  });
+  out.push("");
+  return out;
+}
 // Plain-text check-in + adherence summary to paste into Claude for next week's plan.
 function buildCheckinExport(){
   var weeks=Object.keys(APP.checkIns||{}).sort().reverse();
   var out=["THE LONG GAME — CHECK-IN SUMMARY","Program week "+programWeek(weekKey())+" · Plan started "+APP.planStartDate,"Generated "+todayKey(),""];
+  out=out.concat(recentDinnersSummary(3));
   if(!weeks.length)out.push("(No check-ins recorded yet.)");
   weeks.slice(0,12).forEach(function(wk){
     var c=APP.checkIns[wk]||{},st=weekDailyStats(wk);
