@@ -339,7 +339,7 @@ function mergeState(local,cloud){
   if(!local)return cloud;
   var out={days:{}};
   unionKeys(local.days,cloud.days).forEach(function(d){out.days[d]=mergeDay(local.days&&local.days[d],cloud.days&&cloud.days[d]);});
-  out.planWeeks=Object.assign({},cloud.planWeeks,local.planWeeks); // frozen/immutable union
+  out.planWeeks=mergeByTs(local.planWeeks,cloud.planWeeks); // per-week, newest correction wins (was blind local-wins union — a stale device could resurrect an old frozen week and re-push it over a newer correction)
   out.checkIns=mergeByTs(local.checkIns,cloud.checkIns);
   out.weeks=mergeByTs(local.weeks,cloud.weeks);
   var src=new Date(local.updatedAt||0)>=new Date(cloud.updatedAt||0)?local:cloud; // singletons → last-write-wins
@@ -504,7 +504,9 @@ function freezeCurrentWeekIfNeeded(){
   var wk=weekKey();
   if(!APP.planWeeks)APP.planWeeks={};
   if(APP.planWeeks[wk])return false;
-  APP.planWeeks[wk]=deepClone(applyProgression(APP.activePlan||DEFAULT_PLAN(),wk));
+  var frozen=deepClone(applyProgression(APP.activePlan||DEFAULT_PLAN(),wk));
+  frozen.ts=Date.now();
+  APP.planWeeks[wk]=frozen;
   return true;
 }
 
@@ -586,7 +588,11 @@ function applyPlanImport(doc){
   if(doc.generatedAt)merged.meta.generatedAt=doc.generatedAt;
   APP.activePlan=merged;
   if(!APP.planWeeks)APP.planWeeks={};
-  if(wk<=weekKey())APP.planWeeks[wk]=deepClone(applyProgression(merged,wk));
+  if(wk<=weekKey()){
+    var frozen=deepClone(applyProgression(merged,wk));
+    frozen.ts=Date.now();
+    APP.planWeeks[wk]=frozen;
+  }
   saveAll();
   render();
 }
