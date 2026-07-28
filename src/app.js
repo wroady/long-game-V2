@@ -343,7 +343,12 @@ function mergeState(local,cloud){
   out.checkIns=mergeByTs(local.checkIns,cloud.checkIns);
   out.weeks=mergeByTs(local.weeks,cloud.weeks);
   var src=new Date(local.updatedAt||0)>=new Date(cloud.updatedAt||0)?local:cloud; // singletons → last-write-wins
-  out.activePlan=src.activePlan;
+  // activePlan gets its own plan-version arbitration (meta.ts, stamped on every import) instead of the
+  // whole-state updatedAt — updatedAt bumps on ANY edit (e.g. checking a supplement), so a stale device
+  // making an unrelated edit could otherwise resurrect old plan content wholesale over a newer correction.
+  var planLocalTs=(local.activePlan&&local.activePlan.meta&&local.activePlan.meta.ts)||0;
+  var planCloudTs=(cloud.activePlan&&cloud.activePlan.meta&&cloud.activePlan.meta.ts)||0;
+  out.activePlan=planLocalTs>=planCloudTs?local.activePlan:cloud.activePlan;
   out.planStartDate=src.planStartDate||local.planStartDate||cloud.planStartDate;
   out.groceryState=src.groceryState;
   out.updatedAt=new Date().toISOString();
@@ -515,6 +520,7 @@ function mergePlan(base,doc){
   var merged=deepClone(base);
   merged.meta=merged.meta||{};
   merged.meta.source="import";
+  merged.meta.ts=Date.now(); // plan-specific version stamp — see mergeState's activePlan arbitration
   if(doc.note)merged.meta.note=doc.note;
   if(doc.targets){
     merged.targets=Object.assign({},merged.targets,doc.targets);
