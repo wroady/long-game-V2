@@ -1681,13 +1681,22 @@ function makeImportCard(){
       render();
     }},"Validate"),
     UI.importPreview?h("button",{class:"btn-primary",onclick:function(){
-      var doc=UI.importPreview.doc;
-      UI.importText="";UI.importPreview=null;UI.importErrors=null;UI.importApplied=true;
+      var doc=UI.importPreview.doc,wk=UI.importPreview.wk;
+      UI.importText="";UI.importPreview=null;UI.importErrors=null;UI.importApplied={ts:Date.now(),wk:wk};
       applyPlanImport(doc); // persists + re-renders
     }},"Apply plan"):"",
     (UI.importText||UI.importPreview||UI.importErrors)?h("button",{class:"btn-ghost",onclick:function(){UI.importText="";UI.importPreview=null;UI.importErrors=null;render();}},"Clear"):"",
   ]));
-  if(UI.importApplied){card.appendChild(h("div",{style:{marginTop:"8px",fontSize:"12px",color:"var(--sage)"}},"✓ Plan applied."));UI.importApplied=false;}
+  // Sticks for a few seconds rather than being consumed on the very next render — applyPlanImport's
+  // debounced cloud sync re-renders shortly after Apply, which was wiping a one-shot confirmation
+  // before it could be seen. Also spells out whether the target week is in the future, since a
+  // future-dated import won't change anything visible on today's screen.
+  if(UI.importApplied&&Date.now()-UI.importApplied.ts<5000){
+    var futureWeek=UI.importApplied.wk>weekKey();
+    card.appendChild(h("div",{style:{marginTop:"8px",fontSize:"12px",color:"var(--sage)"}},
+      "✓ Plan applied — week of "+UI.importApplied.wk+(futureWeek?". This week hasn't started yet, so nothing changes on Today until it does.":".")
+    ));
+  }
   return card;
 }
 
