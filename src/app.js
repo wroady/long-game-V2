@@ -532,7 +532,9 @@ function mergePlan(base,doc){
     merged.workouts=Object.assign({},merged.workouts);
     Object.keys(doc.workouts).forEach(function(day){merged.workouts[day]=doc.workouts[day];});
   }
-  if(doc.dinnerPlan&&typeof doc.dinnerPlan==="object")merged.dinnerPlan=Object.assign({},merged.dinnerPlan,doc.dinnerPlan);
+  ["dinnerPlan","breakfastPlan","lunchPlan","snackPlan"].forEach(function(k){
+    if(doc[k]&&typeof doc[k]==="object")merged[k]=Object.assign({},merged[k],doc[k]);
+  });
   if(doc.recipes&&typeof doc.recipes==="object")merged.recipes=Object.assign({},merged.recipes||{},doc.recipes);
   return merged;
 }
@@ -554,13 +556,14 @@ function parsePlanImport(text){
       else if(!doc.workouts[day]||!Array.isArray(doc.workouts[day].exercises))errors.push("workouts."+day+" needs an exercises array.");
     });
   }
-  if(doc.dinnerPlan!=null){
-    if(typeof doc.dinnerPlan!=="object")errors.push("dinnerPlan must be an object keyed by weekday.");
-    else Object.keys(doc.dinnerPlan).forEach(function(day){
-      if(DSET.indexOf(day)===-1)errors.push('dinnerPlan: unknown weekday "'+day+'".');
-      else{var rid=doc.dinnerPlan[day];if(!RECIPES[rid]&&!(doc.recipes&&doc.recipes[rid]))errors.push('dinnerPlan.'+day+': unknown recipe "'+rid+'".');}
+  ["dinnerPlan","breakfastPlan","lunchPlan","snackPlan"].forEach(function(k){
+    if(doc[k]==null)return;
+    if(typeof doc[k]!=="object")errors.push(k+" must be an object keyed by weekday.");
+    else Object.keys(doc[k]).forEach(function(day){
+      if(DSET.indexOf(day)===-1)errors.push(k+': unknown weekday "'+day+'".');
+      else{var rid=doc[k][day];if(!RECIPES[rid]&&!(doc.recipes&&doc.recipes[rid]))errors.push(k+'.'+day+': unknown recipe "'+rid+'".');}
     });
-  }
+  });
   if(doc.supplements!=null){
     if(!Array.isArray(doc.supplements))errors.push("supplements must be an array.");
     else doc.supplements.forEach(function(s,i){if(!s||!s.id)errors.push("supplements["+i+"] missing id.");});
@@ -615,15 +618,25 @@ function getDayLog(){
   if(d.water==null)d.water=0;
   return d;
 }
+var MEAL_PLAN_KEYS=["dinnerPlan","breakfastPlan","lunchPlan","snackPlan"];
 function getWeekState(){
   var k=weekKey();
-  var resolvedDinnerPlan=resolvePlan(k).dinnerPlan;
-  if(!APP.weeks[k]){APP.weeks[k]={ts:Date.now(),dinnerPlan:Object.assign({},resolvedDinnerPlan)};}
-  // dinnerPlan here is a pure derived cache (never user-edited) — resync it whenever a later plan
-  // import changes the resolved dinnerPlan, so "This week's dinners" doesn't keep showing stale data.
-  else if(JSON.stringify(APP.weeks[k].dinnerPlan)!==JSON.stringify(resolvedDinnerPlan)){
-    APP.weeks[k].dinnerPlan=Object.assign({},resolvedDinnerPlan);
-    APP.weeks[k].ts=Date.now();
+  var resolved=resolvePlan(k);
+  if(!APP.weeks[k]){
+    var fresh={ts:Date.now()};
+    MEAL_PLAN_KEYS.forEach(function(pk){fresh[pk]=Object.assign({},resolved[pk]);});
+    APP.weeks[k]=fresh;
+  } else {
+    // These are a pure derived cache (never user-edited) — resync whenever a later plan import
+    // changes the resolved plan, so "This week's dinners" etc. don't keep showing stale data.
+    var changed=false;
+    MEAL_PLAN_KEYS.forEach(function(pk){
+      if(JSON.stringify(APP.weeks[k][pk])!==JSON.stringify(resolved[pk])){
+        APP.weeks[k][pk]=Object.assign({},resolved[pk]);
+        changed=true;
+      }
+    });
+    if(changed)APP.weeks[k].ts=Date.now();
   }
   return APP.weeks[k];
 }
@@ -821,13 +834,16 @@ function suggestLunch(){
   return recommendLunch();
 }
 
-// The specific planned meal for each slot today: dinner from the weekly dinner plan,
-// breakfast/lunch/snack from the day-aware recommendation engines.
+// The specific planned meal for each slot today: an imported per-day recipe wins if the week's
+// plan set one (dinnerPlan/breakfastPlan/lunchPlan/snackPlan); otherwise breakfast/lunch/snack
+// fall back to the day-aware recommendation engines (dinner has no fallback — it's recipe-only).
 function plannedMeal(m,ws,today){
-  if(m.id==="dinner"){
-    var r=getRecipe(ws.dinnerPlan[today]);
-    return r?{name:r.label,cal:r.cal,prot:r.rprot}:null;
+  var rid=ws&&ws[m.id+"Plan"]&&ws[m.id+"Plan"][today];
+  if(rid){
+    var r=getRecipe(rid);
+    if(r)return{name:r.label,cal:r.cal,prot:r.rprot};
   }
+  if(m.id==="dinner")return null;
   if(m.id==="breakfast"){var b=recommendBreakfast();return b?{name:b.option.label,cal:b.option.cal,prot:b.option.prot}:null;}
   if(m.id==="lunch"){var l=recommendLunch();return l?{name:l.option.label,cal:l.option.cal,prot:l.option.prot}:null;}
   if(m.id==="snack"){var s=recommendSnack();return s?{name:s.snack.label,cal:s.snack.cal,prot:s.snack.prot}:null;}
@@ -1200,11 +1216,11 @@ function makeMealCard(m,dl,adj,ws,todayAbbr){
   } else {
     var planned=plannedMeal(m,ws,todayAbbr);
     if(planned){
-      // Dinner's planned meal is a recipe — make its name tap to open the recipe popup.
-      var dinnerRid=(m.id==="dinner"&&ws&&ws.dinnerPlan)?ws.dinnerPlan[todayAbbr]:null;
-      var hasRecipe=dinnerRid&&getRecipe(dinnerRid);
+      // If today's plan set a specific recipe for this meal slot, make its name tap to open the recipe popup.
+      var plannedRid=(ws&&ws[m.id+"Plan"])?ws[m.id+"Plan"][todayAbbr]:null;
+      var hasRecipe=plannedRid&&getRecipe(plannedRid);
       var nameEl=hasRecipe
-        ? h("div",{style:{fontSize:"14px",color:"var(--text)",marginBottom:"2px",cursor:"pointer"},onclick:function(){showRecipeModal(dinnerRid);}},[planned.name+" ",h("span",{style:{color:"var(--sage)",fontSize:"12px"}},"· recipe ›")])
+        ? h("div",{style:{fontSize:"14px",color:"var(--text)",marginBottom:"2px",cursor:"pointer"},onclick:function(){showRecipeModal(plannedRid);}},[planned.name+" ",h("span",{style:{color:"var(--sage)",fontSize:"12px"}},"· recipe ›")])
         : h("div",{style:{fontSize:"14px",color:"var(--text)",marginBottom:"2px"}},planned.name);
       // Show the specific planned meal for today — "Ate as planned" logs it by name.
       card.appendChild(h("div",{style:{marginTop:"12px",background:"rgba(124,148,115,0.08)",borderRadius:"8px",padding:"10px 12px"}},[

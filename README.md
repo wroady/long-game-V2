@@ -102,6 +102,9 @@ All top-level sections are optional; omitted sections carry forward from the cur
       ] }
   },
   "dinnerPlan": { "Mon":"chicken_baked", "Fri":"cod_lemon" },  // recipe ids: built-in OR defined in "recipes" below
+  "breakfastPlan": { "Mon":"high_protein_oats" },     // optional — same shape as dinnerPlan
+  "lunchPlan": { "Mon":"chicken_lentil_bowl" },        // optional — same shape as dinnerPlan
+  "snackPlan": { "Mon":"protein_shake" },              // optional — same shape as dinnerPlan
   "recipes": {
     "cod_lemon": {
       "label": "Lemon herb baked cod + asparagus",
@@ -125,17 +128,21 @@ gates when a supp appears; `time` is `"8:05 AM"` format (the app derives minute 
 `targets.water` pins water (stops the auto-ramp). Importing for `"current"` overwrites the live
 week's plan overlay — your logged data is untouched. Unknown fields are ignored (forward-compatible).
 
-**Recipes**: any `dinnerPlan` recipe id must be a built-in id *or* defined in `recipes`. A recipe
-object is `{ label, prot (protein-source id), cal, rprot, servings?, ing:{produce[],pantry[],dairy[]}, steps:[...], tip? }`.
-Tapping a dinner in the app opens the recipe popup showing macros, ingredients, and the `steps`
+**Recipes**: any `dinnerPlan`/`breakfastPlan`/`lunchPlan`/`snackPlan` recipe id must be a built-in id
+*or* defined in `recipes` (all four plans share the same recipe namespace). A recipe object is
+`{ label, prot (protein-source id), cal, rprot, servings?, ing:{produce[],pantry[],dairy[]}, steps:[...], tip? }`.
+Tapping a planned meal in the app opens the recipe popup showing macros, ingredients, and the `steps`
 (a numbered "Method") + `tip`. Include full recipes in the weekly update so the popups are complete;
-imported recipes override built-ins of the same id for that week.
+imported recipes override built-ins of the same id for that week. `breakfastPlan`/`lunchPlan`/`snackPlan`
+are optional — a day/meal without an entry falls back to the app's built-in recommendation engine, same
+as before this existed.
 
 ### Prompt template for Claude
 
 > Produce a `tlgPlan: 1` JSON for The Long Game for **week N** targeting `"next"`. Include the full
 > week: `targets`, `supplements` (with `introWeek`), `workouts` (Mon–Sun, exercises with sets/reps/weight),
-> `dinnerPlan`, and a `recipes` entry **with full `steps` and a `tip`** for every dinner in the plan.
+> `dinnerPlan`, `breakfastPlan`, `lunchPlan` (and `snackPlan` if it varies by day), and a `recipes`
+> entry **with full `steps` and a `tip`** for every planned meal, not just dinner.
 > Weekday keys Mon–Sun; weights/reps as strings; times like "8:05 AM". Output only the JSON.
 
 ## Notifications (server-side)
