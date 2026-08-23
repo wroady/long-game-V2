@@ -1036,6 +1036,15 @@ function render(){
     wrap.appendChild(h("div",{class:"sec-label"},"This week's dinners"));
     wrap.appendChild(makeWeekStrip(ws,today));
 
+    // Look ahead
+    wrap.appendChild(h("div",{class:"card",style:{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"},onclick:function(){showDayPreviewModal(1);}},[
+      h("div",{},[
+        h("div",{style:{fontFamily:"var(--font-d)",fontSize:"14px",color:"var(--text)"}},"Preview tomorrow"),
+        h("div",{style:{fontSize:"12px",color:"var(--muted)",marginTop:"2px"}},"Full workout + meals, so you can prep ahead"),
+      ]),
+      h("div",{style:{fontSize:"20px",color:"var(--sage)"}},"→"),
+    ]));
+
     // Meals
     wrap.appendChild(h("div",{class:"sec-label"},"Today's meals"));
     PLAN.meals.forEach(function(m){wrap.appendChild(makeMealCard(m,dl,adj,ws,today));});
@@ -1226,6 +1235,66 @@ function showRecipeModal(rid){
     tipEl,
   ]);
   var overlay=h("div",{id:"recipe-modal",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"200",padding:"16px"},onclick:close},[card]);
+  document.body.appendChild(overlay);
+}
+
+// Read-only preview of a future day's workout + meals, for meal-prep planning. offset is days
+// from today (1 = tomorrow); resolves whichever week that date falls in, not just the current one.
+function showDayPreviewModal(offset){
+  var existing=document.getElementById("day-preview-modal");if(existing)existing.remove();
+  function close(){var m=document.getElementById("day-preview-modal");if(m)m.remove();}
+
+  var d=new Date();d.setDate(d.getDate()+offset);
+  var dAbbr=DAYS[d.getDay()];
+  var wkStart=new Date(d);wkStart.setDate(wkStart.getDate()-wkStart.getDay());
+  var plan=resolvePlan(fmtLocalDate(wkStart));
+  var wo=plan.workouts[dAbbr]||plan.workouts["Sun"];
+  var isRest=dAbbr==="Sun";
+  var dateLabel=d.toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"});
+
+  var navRow=h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px"}},[
+    h("button",{style:{background:"none",border:"none",color:offset>1?"var(--sage)":"var(--line)",fontSize:"22px",cursor:offset>1?"pointer":"default",padding:"0 8px"},onclick:offset>1?function(){showDayPreviewModal(offset-1);}:null},"‹"),
+    h("div",{style:{textAlign:"center"}},[
+      offset===1?h("div",{style:{fontSize:"11px",color:"var(--sage)",textTransform:"uppercase",letterSpacing:".06em"}},"Tomorrow"):"",
+      h("div",{style:{fontFamily:"var(--font-d)",fontSize:"18px",color:"var(--text)"}},dateLabel),
+    ]),
+    h("button",{style:{background:"none",border:"none",color:offset<7?"var(--sage)":"var(--line)",fontSize:"22px",cursor:offset<7?"pointer":"default",padding:"0 8px"},onclick:offset<7?function(){showDayPreviewModal(offset+1);}:null},"›"),
+  ]);
+
+  var body=[navRow];
+
+  body.push(h("div",{style:{fontFamily:"var(--font-d)",fontSize:"12px",letterSpacing:".06em",textTransform:"uppercase",color:"var(--sage)",marginTop:"18px",marginBottom:"8px"}},"Workout"));
+  if(isRest){
+    body.push(h("div",{style:{fontSize:"13.5px",color:"var(--muted)",lineHeight:"1.5"}},wo.title+" — rest day"));
+  } else {
+    body.push(h("div",{style:{fontFamily:"var(--font-d)",fontSize:"15px",color:"var(--text)",marginBottom:"6px"}},wo.title));
+    body.push(h("ul",{style:{margin:"0 0 8px",padding:0,listStyle:"none"}},wo.exercises.filter(function(ex){return ex.type!=="rest";}).map(function(ex,i){
+      return h("li",{style:{padding:"6px 0",borderTop:i>0?"1px solid var(--line)":"none"}},
+        h("div",{style:{display:"flex",alignItems:"baseline",gap:"8px",flexWrap:"wrap"}},[
+          h("span",{style:{fontSize:"13.5px",color:"var(--text)"}},(ex.sets>1?ex.sets+"x"+ex.reps+" ":"")+ex.name),
+          h("a",{href:demoLinkFor(ex.name),target:"_blank",rel:"noopener noreferrer",style:{fontSize:"11px",color:"var(--sage)",textDecoration:"none"}},"▶ demo"),
+        ])
+      );
+    })));
+    if(wo.evening)body.push(h("div",{style:{fontSize:"12.5px",color:"var(--warm)"}},"Evening: "+wo.evening));
+  }
+
+  body.push(h("div",{style:{fontFamily:"var(--font-d)",fontSize:"12px",letterSpacing:".06em",textTransform:"uppercase",color:"var(--sage)",marginTop:"20px",marginBottom:"4px"}},"Meals"));
+  var mealLabels={breakfast:"Breakfast",lunch:"Lunch",dinner:"Dinner",snack:"Snack"};
+  ["breakfast","lunch","dinner","snack"].forEach(function(mid,i){
+    var rid=plan[mid+"Plan"]&&plan[mid+"Plan"][dAbbr];
+    var r=rid?((plan.recipes&&plan.recipes[rid])||RECIPES[rid]):null;
+    body.push(h("div",{style:{padding:"8px 0",borderTop:i>0?"1px solid var(--line)":"none",cursor:r?"pointer":"default"},onclick:r?function(){showRecipeModal(rid);}:null},[
+      h("div",{style:{fontSize:"11px",color:"var(--muted)",textTransform:"uppercase",letterSpacing:".05em"}},mealLabels[mid]),
+      r?h("div",{style:{fontSize:"13.5px",color:"var(--text)",marginTop:"2px"}},[r.label+" ",h("span",{style:{color:"var(--sage)",fontSize:"11.5px"}},"· recipe ›")])
+        :h("div",{style:{fontSize:"13px",color:"var(--muted)",marginTop:"2px",fontStyle:"italic"}},"Not planned yet"),
+    ]));
+  });
+
+  var card=h("div",{style:{position:"relative",background:"var(--card)",border:"1px solid var(--line)",borderRadius:"16px",padding:"20px",maxWidth:"440px",width:"92%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 12px 40px rgba(0,0,0,.5)"},onclick:function(e){e.stopPropagation();}},
+    [h("button",{style:{position:"absolute",top:"14px",right:"14px",background:"none",border:"none",color:"var(--muted)",fontSize:"26px",cursor:"pointer",lineHeight:"1",padding:"0 4px"},onclick:close},"×")].concat(body)
+  );
+  var overlay=h("div",{id:"day-preview-modal",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"200",padding:"16px"},onclick:close},[card]);
   document.body.appendChild(overlay);
 }
 
