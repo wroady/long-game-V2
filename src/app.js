@@ -156,6 +156,93 @@ const PANTRY_STAPLES={
   supplements:["magnesium glycinate (local — Meijer/Target)","psyllium husk powder plain (local)","Vital Proteins collagen peptides (local/Amazon)"],
 };
 
+// Curated demo videos for exercises that recur week to week, keyed by lowercased exercise name.
+// A weekly import can invent new exercise names at any time — anything not curated here falls back
+// to an auto-generated YouTube search link (see demoLinkFor) rather than showing nothing.
+const EXERCISE_DEMOS={
+  // TRX
+  "trx squat":"https://www.youtube.com/watch?v=DTXphTGYd0g",
+  "trx row":"https://www.youtube.com/watch?v=fW_jdwZT804",
+  "trx single-arm row":"https://www.youtube.com/watch?v=fZjzpiOJjpg",
+  "trx chest press":"https://www.youtube.com/watch?v=9rf6Rz_3bWU",
+  "trx plank hold":"https://www.youtube.com/watch?v=9-vwH3UNuaQ",
+  "trx plank":"https://www.youtube.com/watch?v=9-vwH3UNuaQ",
+  "trx bicep curl":"https://www.youtube.com/watch?v=aWppBLuQz0s",
+  "trx bicep curl + overhead tricep extension":"https://www.youtube.com/watch?v=aWppBLuQz0s",
+  "trx tricep press":"https://www.youtube.com/watch?v=dK45ATv3YWY",
+  "trx face pull":"https://www.youtube.com/watch?v=Jbyoxer58j4",
+  "trx ab rollout":"https://www.youtube.com/watch?v=097UhDFyKcA",
+  // Kettlebell / dumbbell lower body
+  "goblet squat":"https://www.youtube.com/watch?v=aNDUbH_Uv4g",
+  "kb goblet squat":"https://www.youtube.com/watch?v=aNDUbH_Uv4g",
+  "db goblet squat":"https://www.youtube.com/watch?v=aNDUbH_Uv4g",
+  "romanian deadlift":"https://www.youtube.com/watch?v=Uc5rP5xs7qQ",
+  "kb romanian deadlift":"https://www.youtube.com/watch?v=Uc5rP5xs7qQ",
+  "db romanian deadlift":"https://www.youtube.com/watch?v=Uc5rP5xs7qQ",
+  "kb halo":"https://www.youtube.com/watch?v=jRwUtI5aIhE",
+  "kb reverse lunge":"https://www.youtube.com/watch?v=gWN9epxFqX8",
+  "db reverse lunge":"https://www.youtube.com/watch?v=gWN9epxFqX8",
+  "kb shoulder press":"https://www.youtube.com/watch?v=ihRozd9hafw",
+  "db farmer carry":"https://www.youtube.com/watch?v=VBobkldqqvk",
+  "farmer carry":"https://www.youtube.com/watch?v=VBobkldqqvk",
+  "kb swings":"https://www.youtube.com/watch?v=PAhDt_0PjP4",
+  "kettlebell swing":"https://www.youtube.com/watch?v=PAhDt_0PjP4",
+  "kb deadlift":"https://www.youtube.com/watch?v=MJPGkNqAXzg",
+  // Dumbbell / cable upper body
+  "db floor press":"https://www.youtube.com/watch?v=GY1CsHb4O_g",
+  "db bench press":"https://www.youtube.com/watch?v=Y_7aHqXeCfQ",
+  "db bench press (flat or floor)":"https://www.youtube.com/watch?v=Y_7aHqXeCfQ",
+  "db bent-over row":"https://www.youtube.com/watch?v=EqEOuGFyOgc",
+  "one-arm db row":"https://www.youtube.com/watch?v=EqEOuGFyOgc",
+  "db curl":"https://www.youtube.com/watch?v=sAq_ocpRh_I",
+  "db curl + overhead tricep extension":"https://www.youtube.com/watch?v=sAq_ocpRh_I",
+  "db overhead tricep extension":"https://www.youtube.com/watch?v=fYqswDVbJDg",
+  "db lateral raise":"https://www.youtube.com/watch?v=3VcKaXpzqRo",
+  "db bent-over reverse fly":"https://www.youtube.com/watch?v=ttvfGg9d76c",
+  "rear-delt fly":"https://www.youtube.com/watch?v=ttvfGg9d76c",
+  "cable row":"https://www.youtube.com/watch?v=7o2oolbmzeI",
+  "cable face pull":"https://www.youtube.com/watch?v=rep-qVOkqgk",
+  "cable chest press or db incline press":"https://www.youtube.com/watch?v=_VM-RHaZ7M0",
+  "db incline press":"https://www.youtube.com/watch?v=hChjZQhX1Ls",
+  // Cardio
+  "warm-up row":"https://www.youtube.com/watch?v=4zWu1yuJ0_g",
+  "row":"https://www.youtube.com/watch?v=4zWu1yuJ0_g",
+  "rowing intervals":"https://www.youtube.com/watch?v=_6H4L0SDxZU",
+  "treadmill warm-up":"https://www.youtube.com/watch?v=9ccVxEvWtpA",
+  "treadmill intervals":"https://www.youtube.com/watch?v=9ccVxEvWtpA",
+  "treadmill/elliptical warm-up":"https://www.youtube.com/watch?v=9ccVxEvWtpA",
+  "cardio intervals":"https://www.youtube.com/watch?v=9ccVxEvWtpA",
+  "bike warm-up":"https://www.youtube.com/watch?v=qWSMTbg0P3U",
+  "zone 2 steady ride":"https://www.youtube.com/watch?v=qWSMTbg0P3U",
+  "zone 2 ride":"https://www.youtube.com/watch?v=qWSMTbg0P3U",
+  // Core
+  "dead bug":"https://www.youtube.com/watch?v=mFiAfYflKWw",
+  "bird dog":"https://www.youtube.com/watch?v=wGh2fZU20-M",
+  "glute bridge":"https://www.youtube.com/watch?v=E8Yc4EpVdNI",
+  // Mobility / stretch
+  "hip flexor stretch":"https://www.youtube.com/watch?v=KT0HlPGCl6k",
+  "thoracic rotation":"https://www.youtube.com/watch?v=NOQPH5Q30lY",
+  "knee-to-chest hold":"https://www.youtube.com/watch?v=CaaWogKAkwc",
+  "child's pose + side reach":"https://www.youtube.com/watch?v=YTAwpiX2Dsg",
+  "doorway chest stretch":"https://www.youtube.com/watch?v=h4M4XmCBFd8",
+  // Bodyweight circuit
+  "bodyweight squat":"https://www.youtube.com/watch?v=nEQQle9-0NA",
+  "push-up":"https://www.youtube.com/watch?v=Zi6c09DRGxk",
+};
+
+// Circuit components often bake a rep count or distance into the name ("KB Swings x15", "Row 250m") —
+// strip that before matching, so "KB Swings x15" and "KB Swings x25" both hit the same curated entry.
+function stripRepCount(name){return name.replace(/\s*x\d+(\/\w+)?\s*$/i,"").replace(/\s*\d+m\s*$/i,"").trim();}
+// Resolve a "watch a demo" link for an exercise name: a curated video if we have one, else a
+// YouTube search so there's always SOME one-tap way to see it, even for a brand-new exercise.
+function demoLinkFor(name){
+  if(!name)return null;
+  var clean=stripRepCount(name);
+  var key=clean.toLowerCase();
+  if(EXERCISE_DEMOS[key])return EXERCISE_DEMOS[key];
+  return "https://www.youtube.com/results?search_query="+encodeURIComponent(clean+" exercise form");
+}
+
 // ── HELPERS ────────────────────────────────────────────────────────────────────
 // Date keys are LOCAL-date, not UTC. toISOString() would file an 8pm-ET entry under tomorrow's key.
 function fmtLocalDate(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
@@ -1410,7 +1497,10 @@ function makeWorkoutTab(dl,today){
 
     exCard.appendChild(h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"8px"}},[
       h("div",{},[
-        h("div",{style:{fontFamily:"var(--font-d)",fontSize:"17px",color:"var(--text)"}},ex.name),
+        h("div",{style:{display:"flex",alignItems:"baseline",gap:"8px",flexWrap:"wrap"}},[
+          h("div",{style:{fontFamily:"var(--font-d)",fontSize:"17px",color:"var(--text)"}},ex.name),
+          h("a",{href:demoLinkFor(ex.name),target:"_blank",rel:"noopener noreferrer",style:{fontSize:"12px",color:"var(--sage)",textDecoration:"none"}},"▶ demo"),
+        ]),
         h("div",{style:{fontSize:"11px",color:typeColor,textTransform:"uppercase",letterSpacing:".06em",marginTop:"2px"}},ex.type+(ex.rest>0?" \u00b7 "+ex.rest+"s rest":"")),
       ]),
       ex.sets>1?h("div",{style:{fontFamily:"var(--font-d)",fontSize:"13px",color:"var(--muted)"}},ex.sets+" sets \u00d7 "+ex.reps):"",
@@ -1423,7 +1513,10 @@ function makeWorkoutTab(dl,today){
       exCard.appendChild(h("div",{style:{background:"var(--bg)",borderRadius:"8px",padding:"10px 12px",marginBottom:"12px"}},
         ex.components.map(function(c,i){
           return h("div",{style:{padding:"6px 0",borderTop:i>0?"1px solid var(--line)":"none"}},[
-            h("div",{style:{fontSize:"13.5px",color:"var(--text)",fontWeight:600}},c.name),
+            h("div",{style:{display:"flex",alignItems:"baseline",gap:"8px",flexWrap:"wrap"}},[
+              h("div",{style:{fontSize:"13.5px",color:"var(--text)",fontWeight:600}},c.name),
+              h("a",{href:demoLinkFor(c.name),target:"_blank",rel:"noopener noreferrer",style:{fontSize:"11.5px",color:"var(--sage)",textDecoration:"none"}},"▶ demo"),
+            ]),
             h("div",{style:{fontSize:"12px",color:"var(--muted)",marginTop:"2px"}},c.cue),
           ]);
         })
