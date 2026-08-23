@@ -1255,12 +1255,15 @@ function showDayPreviewModal(offset){
   var dateLabel=d.toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"});
 
   var navRow=h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px"}},[
-    h("button",{style:{background:"none",border:"none",color:offset>1?"var(--sage)":"var(--line)",fontSize:"22px",cursor:offset>1?"pointer":"default",padding:"0 8px"},onclick:offset>1?function(){showDayPreviewModal(offset-1);}:null},"‹"),
-    h("div",{style:{textAlign:"center"}},[
+    h("button",{style:{background:"none",border:"none",color:offset>1?"var(--sage)":"var(--line)",fontSize:"22px",cursor:offset>1?"pointer":"default",padding:"0 8px",flexShrink:0},onclick:offset>1?function(){showDayPreviewModal(offset-1);}:null},"‹"),
+    h("div",{style:{textAlign:"center",flex:1,minWidth:0}},[
       offset===1?h("div",{style:{fontSize:"11px",color:"var(--sage)",textTransform:"uppercase",letterSpacing:".06em"}},"Tomorrow"):"",
       h("div",{style:{fontFamily:"var(--font-d)",fontSize:"18px",color:"var(--text)"}},dateLabel),
     ]),
-    h("button",{style:{background:"none",border:"none",color:offset<7?"var(--sage)":"var(--line)",fontSize:"22px",cursor:offset<7?"pointer":"default",padding:"0 8px"},onclick:offset<7?function(){showDayPreviewModal(offset+1);}:null},"›"),
+    h("div",{style:{display:"flex",alignItems:"center",gap:"10px",flexShrink:0}},[
+      h("button",{style:{background:"none",border:"none",color:offset<7?"var(--sage)":"var(--line)",fontSize:"22px",cursor:offset<7?"pointer":"default",padding:"0 8px"},onclick:offset<7?function(){showDayPreviewModal(offset+1);}:null},"›"),
+      h("button",{style:{background:"none",border:"none",color:"var(--muted)",fontSize:"22px",cursor:"pointer",lineHeight:"1",padding:"0 4px"},onclick:close},"×"),
+    ]),
   ]);
 
   var body=[navRow];
@@ -1293,9 +1296,7 @@ function showDayPreviewModal(offset){
     ]));
   });
 
-  var card=h("div",{style:{position:"relative",background:"var(--card)",border:"1px solid var(--line)",borderRadius:"16px",padding:"20px",maxWidth:"440px",width:"92%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 12px 40px rgba(0,0,0,.5)"},onclick:function(e){e.stopPropagation();}},
-    [h("button",{style:{position:"absolute",top:"14px",right:"14px",background:"none",border:"none",color:"var(--muted)",fontSize:"26px",cursor:"pointer",lineHeight:"1",padding:"0 4px"},onclick:close},"×")].concat(body)
-  );
+  var card=h("div",{style:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:"16px",padding:"20px",maxWidth:"440px",width:"92%",height:"78vh",maxHeight:"620px",overflowY:"auto",boxShadow:"0 12px 40px rgba(0,0,0,.5)"},onclick:function(e){e.stopPropagation();}},body);
   var overlay=h("div",{id:"day-preview-modal",style:{position:"fixed",top:"0",left:"0",right:"0",bottom:"0",background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"200",padding:"16px"},onclick:close},[card]);
   document.body.appendChild(overlay);
 }
