@@ -1691,7 +1691,7 @@ function makeImportCard(){
       var res=parsePlanImport(UI.importText||"");
       if(!res.ok){UI.importErrors=res.errors;UI.importPreview=null;render();return;}
       var wk=resolveTargetWeek(res.doc);
-      var sections=["targets","supplements","workouts","dinnerPlan","meals"].filter(function(k){return res.doc[k]!=null;});
+      var sections=["targets","supplements","workouts","dinnerPlan","breakfastPlan","lunchPlan","snackPlan","meals"].filter(function(k){return res.doc[k]!=null;});
       UI.importErrors=null;
       UI.importPreview={doc:res.doc,wk:wk,isCurrent:wk===weekKey(),sections:sections.length?sections:["(nothing — carries forward)"],note:res.doc.note};
       render();
@@ -1843,9 +1843,28 @@ function makeProgressTab(){
 }
 
 // ── GROCERY TAB ──
-var GS={step:1,inventory:{},dinnerPlan:Object.assign({},DEFAULT_DINNER_PLAN),pantryHave:{},checked:{}};
+var GS={step:1,inventory:{},dinnerPlan:{},breakfastPlan:{},lunchPlan:{},pantryHave:{},checked:{}};
+// Fill any day/meal not yet chosen in the grocery flow from this week's actual imported plan
+// (falls back to DEFAULT_DINNER_PLAN for dinner only, since there's no built-in breakfast/lunch
+// rotation). Never overwrites a day Rodney already picked himself in the grocery flow.
+function seedGSFromCurrentPlan(){
+  var p=curPlan();
+  ["dinnerPlan","breakfastPlan","lunchPlan"].forEach(function(pk){
+    if(!GS[pk])GS[pk]={};
+    ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].forEach(function(day){
+      if(GS[pk][day])return;
+      var rid=(p&&p[pk]&&p[pk][day])||(pk==="dinnerPlan"?DEFAULT_DINNER_PLAN[day]:null);
+      if(rid)GS[pk][day]=rid;
+    });
+  });
+}
+// Every recipe id currently selected across all three grocery meal-plans (dinner+breakfast+lunch).
+function allGSPlannedIds(){
+  return [].concat(Object.values(GS.dinnerPlan||{}),Object.values(GS.breakfastPlan||{}),Object.values(GS.lunchPlan||{}));
+}
 function makeGroceryTab(){
   if(APP.groceryState)GS=Object.assign({},APP.groceryState);
+  seedGSFromCurrentPlan();
   function saveGS(){APP.groceryState=Object.assign({},GS);saveAll();}
   var wrap2=h("div",{});
 
@@ -1881,33 +1900,41 @@ function makeGroceryTab(){
       var bs=have.has(b.r.prot)?0:low2.has(b.r.prot)?1:2;
       return as-bs;
     });
-    wrap2.appendChild(h("div",{class:"sec-label",style:{margin:"0 0 6px"}},"Step 2 of 4 \u2014 Build this week\u2019s dinners"));
-    wrap2.appendChild(h("div",{style:{fontSize:"12.5px",color:"var(--muted)",marginBottom:"16px"}},"Proteins you have are listed first. Pick any meal for each night."));
-    ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].forEach(function(day){
-      var rid=GS.dinnerPlan[day];
+    var dayFull={Mon:"Monday",Tue:"Tuesday",Wed:"Wednesday",Thu:"Thursday",Fri:"Friday",Sat:"Saturday",Sun:"Sunday"};
+    // One day's meal-picker card, shared across the dinner/breakfast/lunch sections below.
+    function mealDayCard(planObj,day){
+      var rid=planObj[day];
       var r=getRecipe(rid);
       var dayHave=r&&have.has(r.prot);
       var dayLow=r&&low2.has(r.prot);
       var card=h("div",{class:"card",style:{marginBottom:"8px",padding:"12px 16px"}});
-      var dayFull={Mon:"Monday",Tue:"Tuesday",Wed:"Wednesday",Thu:"Thursday",Fri:"Friday",Sat:"Saturday",Sun:"Sunday"}[day];
       var sel=h("select",{style:{width:"100%",marginTop:"8px"}});
       recipeList.forEach(function(item){
         var opt=h("option",{value:item.id},item.r.label+(have.has(item.r.prot)?" \u2713":low2.has(item.r.prot)?" \u26a0":""));
         if(item.id===rid)opt.selected=true;
         sel.appendChild(opt);
       });
-      sel.addEventListener("change",function(){GS.dinnerPlan[day]=sel.value;saveGS();});
+      sel.addEventListener("change",function(){planObj[day]=sel.value;saveGS();});
       var tag2=dayHave?"\u2713 Have":dayLow?"\u26a0 Low":"Need to buy";
       var tagColor=dayHave?"var(--sage)":dayLow?"var(--warm)":"var(--muted)";
       card.appendChild(h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"baseline"}},[
         h("div",{},[
-          h("div",{style:{fontSize:"11px",color:"var(--muted)"}},dayFull),
+          h("div",{style:{fontSize:"11px",color:"var(--muted)"}},dayFull[day]),
           h("div",{style:{fontSize:"14px",color:"var(--text)",fontWeight:600}},r?r.label:"\u2014"),
         ]),
         h("span",{class:"tag",style:{background:"rgba(0,0,0,.2)",color:tagColor}},tag2),
       ]));
       card.appendChild(sel);
-      wrap2.appendChild(card);
+      return card;
+    }
+    wrap2.appendChild(h("div",{class:"sec-label",style:{margin:"0 0 6px"}},"Step 2 of 4 \u2014 Build this week\u2019s menu"));
+    wrap2.appendChild(h("div",{style:{fontSize:"12.5px",color:"var(--muted)",marginBottom:"16px"}},"Proteins you have are listed first. Seeded from this week\u2019s imported plan \u2014 change any meal to swap it."));
+    [["dinnerPlan","Dinners"],["breakfastPlan","Breakfasts"],["lunchPlan","Lunches"]].forEach(function(entry){
+      var planKey=entry[0],sectionLabel=entry[1];
+      wrap2.appendChild(h("div",{style:{fontSize:"13px",color:"var(--text)",fontWeight:600,margin:"14px 0 8px"}},sectionLabel));
+      ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].forEach(function(day){
+        wrap2.appendChild(mealDayCard(GS[planKey],day));
+      });
     });
     wrap2.appendChild(h("div",{style:{display:"flex",gap:"8px",marginTop:"12px"}},[
       h("button",{class:"btn-ghost",style:{flex:"none",padding:"10px 16px"},onclick:function(){GS.step=1;saveGS();render();}},"\u2190 Back"),
@@ -1917,7 +1944,7 @@ function makeGroceryTab(){
 
   else if(GS.step===3){
     var needed={produce:new Set(),pantry:new Set(),dairy:new Set(),beverages:new Set(),supplements:new Set()};
-    Object.values(GS.dinnerPlan).forEach(function(rid){
+    allGSPlannedIds().forEach(function(rid){
       var r=getRecipe(rid);if(!r)return;
       Object.keys(r.ing).forEach(function(cat){r.ing[cat].forEach(function(item){if(needed[cat])needed[cat].add(item);});});
     });
@@ -1948,15 +1975,15 @@ function makeGroceryTab(){
   else if(GS.step===4){
     var haveP=new Set(Object.keys(GS.inventory).filter(function(k){return GS.inventory[k].have&&!GS.inventory[k].low;}));
     var finalSections={"\uD83E\uDD69 Proteins":[]};
-    Object.values(GS.dinnerPlan).forEach(function(rid){
+    allGSPlannedIds().forEach(function(rid){
       var r=getRecipe(rid);if(!r)return;
       if(!haveP.has(r.prot)){
         var p=PROTEINS_ALL.find(function(x){return x.id===r.prot;});
-        if(p){var lbl=p.label+" (for dinner)";if(finalSections["\uD83E\uDD69 Proteins"].indexOf(lbl)===-1)finalSections["\uD83E\uDD69 Proteins"].push(lbl);}
+        if(p&&finalSections["\uD83E\uDD69 Proteins"].indexOf(p.label)===-1)finalSections["\uD83E\uDD69 Proteins"].push(p.label);
       }
     });
     var ingNeeded={produce:new Set(),pantry:new Set(),dairy:new Set(),beverages:new Set(),supplements:new Set()};
-    Object.values(GS.dinnerPlan).forEach(function(rid){
+    allGSPlannedIds().forEach(function(rid){
       var r=getRecipe(rid);if(!r)return;
       Object.keys(r.ing).forEach(function(cat){r.ing[cat].forEach(function(item){if(!GS.pantryHave[item]&&ingNeeded[cat])ingNeeded[cat].add(item);});});
     });
@@ -1985,7 +2012,7 @@ function makeGroceryTab(){
           if(navigator.share){navigator.share({title:"Grocery List",text:plainText}).catch(function(){});}
           else{navigator.clipboard&&navigator.clipboard.writeText(plainText).then(function(){alert("Copied! Paste into Notes to share or print.");}).catch(function(){alert(plainText);});}
         }},"Share / Copy"),
-        h("button",{class:"btn-ghost",style:{flex:"none",padding:"6px 12px",fontSize:"12px"},onclick:function(){GS={step:1,inventory:{},dinnerPlan:Object.assign({},DEFAULT_DINNER_PLAN),pantryHave:{},checked:{}};saveGS();render();}},"Start over"),
+        h("button",{class:"btn-ghost",style:{flex:"none",padding:"6px 12px",fontSize:"12px"},onclick:function(){GS={step:1,inventory:{},dinnerPlan:{},breakfastPlan:{},lunchPlan:{},pantryHave:{},checked:{}};saveGS();render();}},"Start over"),
       ]),
     ]));
 
