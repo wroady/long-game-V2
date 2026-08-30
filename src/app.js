@@ -196,6 +196,9 @@ const EXERCISE_DEMOS={
   "db bent-over row":"https://www.youtube.com/watch?v=EqEOuGFyOgc",
   "one-arm db row":"https://www.youtube.com/watch?v=EqEOuGFyOgc",
   "db single-arm row":"https://www.youtube.com/watch?v=EqEOuGFyOgc",
+  "db split squat":"https://www.youtube.com/watch?v=5VG4UnfA7Bk",
+  "db overhead press":"https://www.youtube.com/watch?v=ihRozd9hafw",
+  "db suitcase carry":"https://www.youtube.com/watch?v=tNHdx7pmrGI",
   "db curl":"https://www.youtube.com/watch?v=sAq_ocpRh_I",
   "db curl + overhead tricep extension":"https://www.youtube.com/watch?v=sAq_ocpRh_I",
   "db overhead tricep extension":"https://www.youtube.com/watch?v=fYqswDVbJDg",
@@ -217,6 +220,7 @@ const EXERCISE_DEMOS={
   "bike warm-up":"https://www.youtube.com/watch?v=qWSMTbg0P3U",
   "zone 2 steady ride":"https://www.youtube.com/watch?v=qWSMTbg0P3U",
   "zone 2 ride":"https://www.youtube.com/watch?v=qWSMTbg0P3U",
+  "zone 2 bike":"https://www.youtube.com/watch?v=qWSMTbg0P3U",
   // Core
   "dead bug":"https://www.youtube.com/watch?v=mFiAfYflKWw",
   "bird dog":"https://www.youtube.com/watch?v=wGh2fZU20-M",
