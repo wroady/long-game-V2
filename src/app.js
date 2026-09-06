@@ -1206,8 +1206,8 @@ function makeMealSugCard(mealType,option,reason,cal,prot,onDismiss){
 }
 
 // Popup showing a dinner recipe's macros + ingredients. Appended to <body> so render() can't clobber it.
-function showRecipeModal(rid){
-  var r=getRecipe(rid);
+function showRecipeModal(rid,plan){
+  var r=(plan&&plan.recipes&&plan.recipes[rid])||getRecipe(rid);
   if(!r)return;
   var existing=document.getElementById("recipe-modal");if(existing)existing.remove();
   function close(){var m=document.getElementById("recipe-modal");if(m)m.remove();}
@@ -1293,7 +1293,7 @@ function showDayPreviewModal(offset){
   ["breakfast","lunch","dinner","snack"].forEach(function(mid,i){
     var rid=plan[mid+"Plan"]&&plan[mid+"Plan"][dAbbr];
     var r=rid?((plan.recipes&&plan.recipes[rid])||RECIPES[rid]):null;
-    body.push(h("div",{style:{padding:"8px 0",borderTop:i>0?"1px solid var(--line)":"none",cursor:r?"pointer":"default"},onclick:r?function(){showRecipeModal(rid);}:null},[
+    body.push(h("div",{style:{padding:"8px 0",borderTop:i>0?"1px solid var(--line)":"none",cursor:r?"pointer":"default"},onclick:r?function(){showRecipeModal(rid,plan);}:null},[
       h("div",{style:{fontSize:"11px",color:"var(--muted)",textTransform:"uppercase",letterSpacing:".05em"}},mealLabels[mid]),
       r?h("div",{style:{fontSize:"13.5px",color:"var(--text)",marginTop:"2px"}},[r.label+" ",h("span",{style:{color:"var(--sage)",fontSize:"11.5px"}},"· recipe ›")])
         :h("div",{style:{fontSize:"13px",color:"var(--muted)",marginTop:"2px",fontStyle:"italic"}},"Not planned yet"),
