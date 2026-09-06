@@ -238,7 +238,7 @@ const EXERCISE_DEMOS={
 
 // Circuit components often bake a rep count or distance into the name ("KB Swings x15", "Row 250m") —
 // strip that before matching, so "KB Swings x15" and "KB Swings x25" both hit the same curated entry.
-function stripRepCount(name){return name.replace(/\s*x\d+(\/\w+)?\s*$/i,"").replace(/\s*\d+m\s*$/i,"").trim();}
+function stripRepCount(name){return name.replace(/\s*x\d+(\/\w+)?\s*$/i,"").replace(/\s*\d+m\s*$/i,"").replace(/,\s*\d+(\.\d+)?\s*(lbs?|s)\s*$/i,"").trim();}
 // Resolve a "watch a demo" link for an exercise name: a curated video if we have one, else a
 // YouTube search so there's always SOME one-tap way to see it, even for a brand-new exercise.
 function demoLinkFor(name){
