@@ -90,7 +90,7 @@ All top-level sections are optional; omitted sections carry forward from the cur
   "tlgPlan": 1,                       // required version sentinel
   "targetWeek": "next",               // "next" (default) | "current" | "YYYY-MM-DD" (a Sunday)
   "note": "Week 3 — add berberine, bump squats",
-  "targets": { "cal":1850, "calMin":1750, "calMax":1950, "prot":165, "water":120 },
+  "targets": { "cal":1850, "calMin":1750, "calMax":1950, "prot":165, "water":120, "fat":70, "fiber":35 },
   "supplements": [
     { "id":"berberine-l", "label":"Berberine — 500mg", "time":"12:30 PM", "introWeek":3 }
   ],
@@ -108,7 +108,7 @@ All top-level sections are optional; omitted sections carry forward from the cur
   "recipes": {
     "cod_lemon": {
       "label": "Lemon herb baked cod + asparagus",
-      "prot": "cod", "cal": 280, "rprot": 40, "servings": "Serves 2",
+      "prot": "cod", "cal": 280, "rprot": 40, "fat": 9, "fiber": 4, "servings": "Serves 2",
       "ing": { "produce": ["asparagus","lemon","garlic","fresh parsley"], "pantry": ["olive oil","paprika"] },
       "steps": [
         "Preheat oven to 400°F.",
@@ -127,10 +127,13 @@ Rules: weekday keys are `Mon`..`Sun`; `weight`/`reps` are free-text strings; sup
 gates when a supp appears; `time` is `"8:05 AM"` format (the app derives minute offsets). Setting
 `targets.water` pins water (stops the auto-ramp). Importing for `"current"` overwrites the live
 week's plan overlay — your logged data is untouched. Unknown fields are ignored (forward-compatible).
+`targets.fat`/`targets.fiber` are optional day-level ceiling/target values; when present (and at least
+one recipe eaten that day carries `fat`/`fiber`), the Today tab shows a running total against them,
+same as calories and protein.
 
 **Recipes**: any `dinnerPlan`/`breakfastPlan`/`lunchPlan`/`snackPlan` recipe id must be a built-in id
 *or* defined in `recipes` (all four plans share the same recipe namespace). A recipe object is
-`{ label, prot (protein-source id), cal, rprot, servings?, ing:{produce[],pantry[],dairy[]}, steps:[...], tip? }`.
+`{ label, prot (protein-source id), cal, rprot, fat?, fiber?, servings?, ing:{produce[],pantry[],dairy[]}, steps:[...], tip? }`.
 Tapping a planned meal in the app opens the recipe popup showing macros, ingredients, and the `steps`
 (a numbered "Method") + `tip`. Include full recipes in the weekly update so the popups are complete;
 imported recipes override built-ins of the same id for that week. `breakfastPlan`/`lunchPlan`/`snackPlan`

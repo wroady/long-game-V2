@@ -2,7 +2,7 @@
 const SUPABASE_URL="https://jswukfohohtiwuhskyaw.supabase.co";
 const SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impzd3VrZm9ob2h0aXd1aHNreWF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4NTYzMjIsImV4cCI6MjA5ODQzMjMyMn0.p9L5JtemTlaHoZ2kewIy8Y-ZDxmKSCw9RcoAtiGc_Kc";
 const NTFY="https://ntfy.sh/rodney-longgame-7x4k";
-const TARGETS={cal:1850,calMin:1750,calMax:1950,prot:160,water:80};
+const TARGETS={cal:1850,calMin:1750,calMax:1950,prot:160,water:80,fat:70,fiber:35};
 const VTHRESH={prot:10,cal:100};
 const MEALS=[
   {id:"breakfast",label:"Breakfast",time:"8:05 AM",tMin:485,cal:450,prot:45},
@@ -276,12 +276,14 @@ function div(cls,children,style){return h("div",{class:cls||"",style:style||{}},
 // ── MEAL MODEL ───────────────────────────────────────────────────────────────
 // Canonical (live Supabase) shape per meal: {status:"planned"|"eaten", actualCal, actualProtein}.
 // We also carry an optional `name` (ignored by the other app version) to keep the food-diary feature.
-function blankMeal(){return {status:"planned",actualCal:null,actualProtein:null};}
+function blankMeal(){return {status:"planned",actualCal:null,actualProtein:null,actualFat:null,actualFiber:null};}
 function mealEaten(e){return !!e&&e.status==="eaten";}
 function mealCal(e,m){return mealEaten(e)&&e.actualCal!=null?e.actualCal:m.cal;}
 function mealProt(e,m){return mealEaten(e)&&e.actualProtein!=null?e.actualProtein:m.prot;}
+function mealFat(e,m){return mealEaten(e)&&e.actualFat!=null?e.actualFat:(m.fat||0);}
+function mealFiber(e,m){return mealEaten(e)&&e.actualFiber!=null?e.actualFiber:(m.fiber||0);}
 function mealName(e){return e&&e.name?e.name:null;}
-function setMealEaten(dl,id,cal,prot,name){var meal={status:"eaten",actualCal:cal,actualProtein:prot};if(name)meal.name=name;dl.meals[id]=meal;}
+function setMealEaten(dl,id,cal,prot,name,fat,fiber){var meal={status:"eaten",actualCal:cal,actualProtein:prot,actualFat:fat||0,actualFiber:fiber||0};if(name)meal.name=name;dl.meals[id]=meal;}
 function clearMeal(dl,id){dl.meals[id]=blankMeal();}
 
 // ── SYNC GATE ────────────────────────────────────────────────────────────────
@@ -737,12 +739,12 @@ function getWeekState(){
 function computeTotals(){
   var MEALS=curPlan().meals; // resolved meal slots for the current week
   var dl=getDayLog();
-  var cal=0,prot=0;
+  var cal=0,prot=0,fat=0,fiber=0;
   MEALS.forEach(function(m){
     var e=dl.meals[m.id];
-    if(mealEaten(e)){cal+=mealCal(e,m);prot+=mealProt(e,m);}
+    if(mealEaten(e)){cal+=mealCal(e,m);prot+=mealProt(e,m);fat+=mealFat(e,m);fiber+=mealFiber(e,m);}
   });
-  return{cal:cal,prot:prot};
+  return{cal:cal,prot:prot,fat:fat,fiber:fiber};
 }
 
 // Sum eaten meals across the current week (Sunday start → +6 days).
@@ -934,12 +936,12 @@ function plannedMeal(m,ws,today){
   var rid=ws&&ws[m.id+"Plan"]&&ws[m.id+"Plan"][today];
   if(rid){
     var r=getRecipe(rid);
-    if(r)return{name:r.label,cal:r.cal,prot:r.rprot};
+    if(r)return{name:r.label,cal:r.cal,prot:r.rprot,fat:r.fat||0,fiber:r.fiber||0};
   }
   if(m.id==="dinner")return null;
-  if(m.id==="breakfast"){var b=recommendBreakfast();return b?{name:b.option.label,cal:b.option.cal,prot:b.option.prot}:null;}
-  if(m.id==="lunch"){var l=recommendLunch();return l?{name:l.option.label,cal:l.option.cal,prot:l.option.prot}:null;}
-  if(m.id==="snack"){var s=recommendSnack();return s?{name:s.snack.label,cal:s.snack.cal,prot:s.snack.prot}:null;}
+  if(m.id==="breakfast"){var b=recommendBreakfast();return b?{name:b.option.label,cal:b.option.cal,prot:b.option.prot,fat:b.option.fat||0,fiber:b.option.fiber||0}:null;}
+  if(m.id==="lunch"){var l=recommendLunch();return l?{name:l.option.label,cal:l.option.cal,prot:l.option.prot,fat:l.option.fat||0,fiber:l.option.fiber||0}:null;}
+  if(m.id==="snack"){var s=recommendSnack();return s?{name:s.snack.label,cal:s.snack.cal,prot:s.snack.prot,fat:s.snack.fat||0,fiber:s.snack.fiber||0}:null;}
   return null;
 }
 
@@ -1019,11 +1021,18 @@ function render(){
   // ── TODAY TAB ──
   if(UI.tab==="today"){
     // Stats
-    var statRow=h("div",{style:{display:"flex",gap:"14px",marginBottom:"22px"}},[
+    var hasFatFiber=!!(PLAN.targets.fat||PLAN.targets.fiber); // absent on weeks imported before fat/fiber tracking existed
+    var statRow=h("div",{style:{display:"flex",gap:"14px",marginBottom:hasFatFiber?"10px":"22px"}},[
       makeStatBlock("Protein",totals.prot,PLAN.targets.prot,"g","var(--warm)"),
       makeStatBlock("Calories",totals.cal,PLAN.targets.cal,"","var(--sage)"),
     ]);
     wrap.appendChild(statRow);
+    if(hasFatFiber){
+      wrap.appendChild(h("div",{style:{display:"flex",gap:"14px",marginBottom:"22px"}},[
+        makeStatBlock("Fat",totals.fat,PLAN.targets.fat||TARGETS.fat,"g","#D9A441"),
+        makeStatBlock("Fiber",totals.fiber,PLAN.targets.fiber||TARGETS.fiber,"g","#7BAFC4"),
+      ]));
+    }
 
     // Due today
     wrap.appendChild(h("div",{class:"sec-label"},"Due today"));
@@ -1223,7 +1232,7 @@ function showRecipeModal(rid,plan){
       ]));
     }
   });
-  var macros=proteinLabel+" · "+r.cal+" cal · "+r.rprot+"g protein"+(r.servings?" · "+r.servings:"");
+  var macros=proteinLabel+" · "+r.cal+" cal · "+r.rprot+"g protein"+macroSuffix(r.fat,r.fiber)+(r.servings?" · "+r.servings:"");
   var stepsEl=(Array.isArray(r.steps)&&r.steps.length)?h("div",{},[
     h("div",{style:{fontFamily:"var(--font-d)",fontSize:"12px",letterSpacing:".06em",textTransform:"uppercase",color:"var(--sage)",marginTop:"20px"}},"Method"),
     h("ol",{style:{margin:"8px 0 0",paddingLeft:"20px"}},r.steps.map(function(st){return h("li",{style:{fontSize:"13.5px",color:"var(--text)",padding:"3px 0",lineHeight:"1.45"}},st);})),
@@ -1319,6 +1328,14 @@ function makeWeekStrip(ws,today){
   }));
 }
 
+// Trailing " · Xg fat · Yg fiber" for a macro summary line — omits either half when zero/unknown
+// so weeks without fat/fiber data (pre-Week 15 imports) don't show misleading zeros.
+function macroSuffix(fat,fiber){
+  var parts=[];
+  if(fat)parts.push(fat+"g fat");
+  if(fiber)parts.push(fiber+"g fiber");
+  return parts.length?" · "+parts.join(" · "):"";
+}
 function makeMealCard(m,dl,adj,ws,todayAbbr){
   var entry=dl.meals[m.id];
   var eaten=mealEaten(entry);
@@ -1351,7 +1368,7 @@ function makeMealCard(m,dl,adj,ws,todayAbbr){
     if(loggedName){
       info.appendChild(h("div",{style:{fontSize:"13.5px",color:"var(--text)",marginBottom:"2px"}},loggedName));
     }
-    var nums=h("div",{style:{fontSize:"13px",color:"var(--sage)"}},"Logged \u2014 "+loggedCal+" cal \u00b7 "+loggedProt+"g protein");
+    var nums=h("div",{style:{fontSize:"13px",color:"var(--sage)"}},"Logged \u2014 "+loggedCal+" cal \u00b7 "+loggedProt+"g protein"+macroSuffix(mealFat(entry,m),mealFiber(entry,m)));
     var undo=h("button",{style:{marginLeft:"10px",background:"none",border:"none",color:"var(--muted)",textDecoration:"underline",cursor:"pointer",fontSize:"12px"},onclick:function(){
       clearMeal(dl,m.id);
       delete UI.acceptedSug[today+"-"+m.id];
@@ -1366,11 +1383,11 @@ function makeMealCard(m,dl,adj,ws,todayAbbr){
     card.appendChild(h("div",{style:{marginTop:"12px",background:"rgba(124,148,115,0.1)",borderRadius:"8px",padding:"10px 12px"}},[
       h("div",{style:{fontSize:"12px",color:"var(--sage)",marginBottom:"4px"}},"Suggested for you"),
       h("div",{style:{fontSize:"14px",color:"var(--text)",marginBottom:"2px"}},accepted.name),
-      h("div",{style:{fontSize:"12px",color:"var(--muted)"}},accepted.cal+" cal \u00b7 "+accepted.prot+"g protein"),
+      h("div",{style:{fontSize:"12px",color:"var(--muted)"}},accepted.cal+" cal \u00b7 "+accepted.prot+"g protein"+macroSuffix(accepted.fat,accepted.fiber)),
     ]));
     card.appendChild(h("div",{style:{display:"flex",gap:"8px",marginTop:"12px"}},[
       h("button",{class:"btn-primary",style:{flex:1},onclick:function(){
-        setMealEaten(dl,m.id,accepted.cal,accepted.prot,accepted.name);
+        setMealEaten(dl,m.id,accepted.cal,accepted.prot,accepted.name,accepted.fat,accepted.fiber);
         saveAll();render();
       }},"I had this"),
       h("button",{class:"btn-ghost",style:{flex:"none"},onclick:function(){showEditMeal(card,m,dl,a);}},"\u270e Log different"),
@@ -1389,11 +1406,11 @@ function makeMealCard(m,dl,adj,ws,todayAbbr){
       card.appendChild(h("div",{style:{marginTop:"12px",background:"rgba(124,148,115,0.08)",borderRadius:"8px",padding:"10px 12px"}},[
         h("div",{style:{fontSize:"12px",color:"var(--sage)",marginBottom:"4px"}},"Planned for today"),
         nameEl,
-        h("div",{style:{fontSize:"12px",color:"var(--muted)"}},planned.cal+" cal · "+planned.prot+"g protein"),
+        h("div",{style:{fontSize:"12px",color:"var(--muted)"}},planned.cal+" cal · "+planned.prot+"g protein"+macroSuffix(planned.fat,planned.fiber)),
       ]));
       card.appendChild(h("div",{style:{display:"flex",gap:"8px",marginTop:"12px"}},[
         h("button",{class:"btn-primary",style:{flex:1},onclick:function(){
-          setMealEaten(dl,m.id,planned.cal,planned.prot,planned.name);
+          setMealEaten(dl,m.id,planned.cal,planned.prot,planned.name,planned.fat,planned.fiber);
           saveAll();render();
         }},"Ate as planned"),
         h("button",{class:"btn-ghost",style:{flex:"none"},onclick:function(){showEditMeal(card,m,dl,a);}},"✎ Log different"),
@@ -1421,17 +1438,21 @@ function showEditMeal(card,m,dl,a,existingNameIn){
   var nameIn=existingNameIn||makeInput("text","",null,{width:"100%",marginBottom:"6px",placeholder:"What did you have?"});
   var calIn=makeInput("number",String(a.cal),null,{width:"70px"});
   var protIn=makeInput("number",String(a.prot),null,{width:"70px"});
+  var fatIn=makeInput("number",a.fat?String(a.fat):"",null,{width:"70px",placeholder:"0"});
+  var fiberIn=makeInput("number",a.fiber?String(a.fiber):"",null,{width:"70px",placeholder:"0"});
   var row=h("div",{class:"edit-row",style:{marginTop:"12px"}},[
     nameIn,
-    h("div",{style:{display:"flex",gap:"8px",alignItems:"flex-end"}},[
+    h("div",{style:{display:"flex",gap:"8px",alignItems:"flex-end",flexWrap:"wrap",marginBottom:"8px"}},[
       h("label",{style:{fontSize:"11px",color:"var(--muted)",display:"flex",flexDirection:"column",gap:"4px"}},["Calories",calIn]),
       h("label",{style:{fontSize:"11px",color:"var(--muted)",display:"flex",flexDirection:"column",gap:"4px"}},["Protein (g)",protIn]),
-      h("button",{class:"btn-primary",onclick:function(){
-        var name=nameIn.value.trim();
-        setMealEaten(dl,m.id,parseInt(calIn.value)||a.cal,parseInt(protIn.value)||a.prot,name||null);
-        saveAll();render();
-      }},"Save"),
+      h("label",{style:{fontSize:"11px",color:"var(--muted)",display:"flex",flexDirection:"column",gap:"4px"}},["Fat (g)",fatIn]),
+      h("label",{style:{fontSize:"11px",color:"var(--muted)",display:"flex",flexDirection:"column",gap:"4px"}},["Fiber (g)",fiberIn]),
     ]),
+    h("button",{class:"btn-primary",onclick:function(){
+      var name=nameIn.value.trim();
+      setMealEaten(dl,m.id,parseInt(calIn.value)||a.cal,parseInt(protIn.value)||a.prot,name||null,parseInt(fatIn.value)||0,parseInt(fiberIn.value)||0);
+      saveAll();render();
+    }},"Save"),
   ]);
   card.appendChild(row);
 }
