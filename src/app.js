@@ -2,6 +2,7 @@
 const SUPABASE_URL="https://jswukfohohtiwuhskyaw.supabase.co";
 const SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impzd3VrZm9ob2h0aXd1aHNreWF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4NTYzMjIsImV4cCI6MjA5ODQzMjMyMn0.p9L5JtemTlaHoZ2kewIy8Y-ZDxmKSCw9RcoAtiGc_Kc";
 const NTFY="https://ntfy.sh/rodney-longgame-7x4k";
+const VAPID_PUBLIC_KEY="BHfWwn8YX7FOM7qFPXzkQh_2u3WHGwiIkK92lKPj_VhwUnAsLiQ4pG_Cpd090MGgroDBkMP0fnKBq9XXTHzJDV8"; // public half of the Web Push key pair; the private half lives only in a GitHub secret
 const TARGETS={cal:1850,calMin:1750,calMax:1950,prot:160,water:80,fat:70,fiber:35};
 const VTHRESH={prot:10,cal:100};
 const MEALS=[
@@ -382,7 +383,7 @@ async function cloudPush(state){
 }
 // Build the canonical live-schema object to persist (drops runtime-only fields like planWeek/UI).
 function serializeState(){
-  return {days:APP.days,weeks:APP.weeks,checkIns:APP.checkIns,groceryState:APP.groceryState,planStartDate:APP.planStartDate,planWeeks:APP.planWeeks,activePlan:APP.activePlan,updatedAt:APP.updatedAt};
+  return {days:APP.days,weeks:APP.weeks,checkIns:APP.checkIns,groceryState:APP.groceryState,planStartDate:APP.planStartDate,planWeeks:APP.planWeeks,activePlan:APP.activePlan,pushSubs:APP.pushSubs,updatedAt:APP.updatedAt};
 }
 
 // ── CONFLICT-FREE MERGE ───────────────────────────────────────────────────────
@@ -437,6 +438,7 @@ function mergeState(local,cloud){
   out.planWeeks=mergeByTs(local.planWeeks,cloud.planWeeks); // per-week, newest correction wins (was blind local-wins union — a stale device could resurrect an old frozen week and re-push it over a newer correction)
   out.checkIns=mergeByTs(local.checkIns,cloud.checkIns);
   out.weeks=mergeByTs(local.weeks,cloud.weeks);
+  out.pushSubs=mergeByTs(local.pushSubs,cloud.pushSubs); // one entry per device (keyed by push endpoint); newest ts wins, so a disabled device stays disabled
   var src=new Date(local.updatedAt||0)>=new Date(cloud.updatedAt||0)?local:cloud; // singletons → last-write-wins
   // activePlan gets its own plan-version arbitration (meta.ts, stamped on every import) instead of the
   // whole-state updatedAt — updatedAt bumps on ANY edit (e.g. checking a supplement), so a stale device
@@ -453,7 +455,7 @@ function mergeState(local,cloud){
 function adoptState(s){
   APP.days=s.days||{};APP.weeks=s.weeks||{};APP.checkIns=s.checkIns||{};
   APP.groceryState=s.groceryState||null;APP.planStartDate=s.planStartDate||todayKey();
-  APP.planWeeks=s.planWeeks||{};APP.activePlan=s.activePlan||null;APP.updatedAt=s.updatedAt||APP.updatedAt;
+  APP.planWeeks=s.planWeeks||{};APP.activePlan=s.activePlan||null;APP.pushSubs=s.pushSubs||{};APP.updatedAt=s.updatedAt||APP.updatedAt;
   if(APP.groceryState)GS=Object.assign({},APP.groceryState);
   var wk=weekKey();
   CI=(APP.checkIns&&APP.checkIns[wk])?Object.assign({},APP.checkIns[wk]):{};
@@ -502,15 +504,78 @@ async function doCloudSync(){
   try{
     var cloud=await cloudPull();
     var merged=cloud?mergeState(serializeState(),cloud.state):serializeState();
-    var before=JSON.stringify([APP.days,APP.checkIns,APP.weeks,APP.groceryState,APP.activePlan,APP.planStartDate]);
+    var before=JSON.stringify([APP.days,APP.checkIns,APP.weeks,APP.groceryState,APP.activePlan,APP.planStartDate,APP.pushSubs]);
     adoptState(merged);
-    var after=JSON.stringify([APP.days,APP.checkIns,APP.weeks,APP.groceryState,APP.activePlan,APP.planStartDate]);
+    var after=JSON.stringify([APP.days,APP.checkIns,APP.weeks,APP.groceryState,APP.activePlan,APP.planStartDate,APP.pushSubs]);
     lsSet("tlg",merged);
     await cloudPush(merged);
     setSyncStatus("synced");
     if(before!==after)render(); // reflect merged-in changes without clobbering active input on no-ops
   }catch(e){setSyncStatus("offline");}
 }
+
+// ── WEB PUSH ───────────────────────────────────────────────────────────────────
+// Each device that turns reminders on registers its own push subscription, stored in APP.pushSubs
+// (keyed by endpoint) so it syncs with everything else. A GitHub Actions job
+// (scripts/schedule-notifications.mjs --push-tick) reads them and sends the reminders.
+function pushSupported(){return "serviceWorker" in navigator&&"PushManager" in window&&"Notification" in window;}
+function isStandalone(){return window.navigator.standalone===true||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches);}
+function deviceLabel(){
+  var ua=navigator.userAgent;
+  if(/iPhone/.test(ua))return "iPhone";
+  if(/iPad/.test(ua)||(/Macintosh/.test(ua)&&navigator.maxTouchPoints>1))return "iPad";
+  if(/Android/.test(ua))return "Android";
+  if(/Macintosh/.test(ua))return "Mac";
+  return "Browser";
+}
+function b64ToBytes(b){var p="=".repeat((4-b.length%4)%4);var s=atob((b+p).replace(/-/g,"+").replace(/_/g,"/"));var o=new Uint8Array(s.length);for(var i=0;i<s.length;i++)o[i]=s.charCodeAt(i);return o;}
+async function currentPushSub(){var reg=await navigator.serviceWorker.getRegistration();return reg?reg.pushManager.getSubscription():null;}
+function rememberSub(sub,off){
+  var j=sub.toJSON();
+  if(!APP.pushSubs)APP.pushSubs={};
+  APP.pushSubs[sub.endpoint]={sub:{endpoint:j.endpoint,keys:j.keys},label:deviceLabel(),ts:Date.now(),off:!!off};
+  try{localStorage.setItem("tlg-push",off?"0":"1");}catch(e){}
+  saveAll();
+}
+async function enablePush(){
+  UI.pushMsg="";
+  if(syncEnabled()&&!sessionValid()){UI.pushMsg="Sign in first so reminders can reach this device.";return;}
+  try{
+    var perm=await Notification.requestPermission();
+    if(perm!=="granted"){UI.pushMsg="Notifications are blocked for this app. Allow them in iOS Settings > Notifications > Long Game, then try again.";return;}
+    var reg=await navigator.serviceWorker.ready;
+    var sub=(await reg.pushManager.getSubscription())||(await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToBytes(VAPID_PUBLIC_KEY)}));
+    rememberSub(sub,false);
+  }catch(e){UI.pushMsg="Couldn't turn on notifications: "+(e&&e.message?e.message:e);}
+}
+async function disablePush(){
+  try{
+    var sub=await currentPushSub();
+    if(sub){rememberSub(sub,true);try{await sub.unsubscribe();}catch(e){}}
+  }catch(e){UI.pushMsg="Couldn't turn off notifications: "+(e&&e.message?e.message:e);}
+}
+// Work out whether THIS device is currently receiving reminders (and re-register if the browser
+// dropped or rotated the subscription since we last saved it).
+async function refreshPushUI(){
+  var on=false;
+  try{
+    if(pushSupported()){
+      var sub=await currentPushSub();
+      var marker=null;try{marker=localStorage.getItem("tlg-push");}catch(e){}
+      if(Notification.permission==="granted"&&marker==="1"){
+        if(!sub){
+          var reg=await navigator.serviceWorker.ready;
+          sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToBytes(VAPID_PUBLIC_KEY)});
+        }
+        var rec=APP.pushSubs&&APP.pushSubs[sub.endpoint];
+        if(!rec||rec.off)rememberSub(sub,false);
+        on=true;
+      }
+    }
+  }catch(e){console.warn("Push status check failed",e);}
+  if(UI.pushOn!==on){UI.pushOn=on;render();}
+}
+async function initPush(){await refreshPushUI();}
 
 // ── NTFY ───────────────────────────────────────────────────────────────────────
 // NOTE: ntfy reminders are now scheduled server-side by a single daily GitHub Actions job
@@ -523,6 +588,7 @@ var APP={
   days:{},weeks:{},checkIns:{},groceryState:null,
   planStartDate:todayKey(),planWeek:1,
   planWeeks:{},activePlan:null,
+  pushSubs:{},
   updatedAt:null
 };
 var UI={tab:"today",snackDismissed:{},breakfastDismissed:{},lunchDismissed:{},acceptedSug:{}};
@@ -1906,6 +1972,29 @@ function makeImportCard(){
   return card;
 }
 
+function makePushCard(){
+  var card=h("div",{class:"card"});
+  card.appendChild(h("div",{style:{fontSize:"13.5px",color:"var(--text)",marginBottom:"4px"}},"Reminders on this device"));
+  var others=Object.keys(APP.pushSubs||{}).map(function(k){return APP.pushSubs[k];}).filter(function(r){return r&&!r.off;});
+  if(!pushSupported()){
+    var ios=/iPhone|iPad/.test(navigator.userAgent)||(/Macintosh/.test(navigator.userAgent)&&navigator.maxTouchPoints>1);
+    card.appendChild(h("div",{style:{fontSize:"12.5px",color:"var(--muted)",lineHeight:"1.5"}},ios&&!isStandalone()
+      ?"To get reminders as notifications, add The Long Game to your Home Screen (Share > Add to Home Screen), then open it from that icon and come back here."
+      :"This browser doesn't support push notifications."));
+    return card;
+  }
+  card.appendChild(h("div",{style:{fontSize:"12.5px",color:"var(--muted)",lineHeight:"1.5",marginBottom:"10px"}},UI.pushOn
+    ?"On. This device gets the daily reminders (supplements, meals, wind-down)."
+    :"Off. Turn on to get the daily reminders as notifications on this device."));
+  if(UI.pushMsg)card.appendChild(h("div",{style:{fontSize:"12px",color:"var(--warm)",marginBottom:"8px"}},UI.pushMsg));
+  card.appendChild(h("button",{class:UI.pushOn?"btn-ghost":"btn-primary",style:{padding:"8px 14px",fontSize:"13px"},onclick:async function(){
+    if(UI.pushOn)await disablePush();else await enablePush();
+    await refreshPushUI();render();
+  }},UI.pushOn?"Turn off on this device":"Turn on notifications"));
+  if(others.length)card.appendChild(h("div",{style:{fontSize:"11.5px",color:"var(--muted)",marginTop:"10px"}},"Active on: "+others.map(function(r){return r.label||"device";}).join(", ")));
+  return card;
+}
+
 function makeCheckinTab(){
   var wk=weekKey();
   if(APP.checkIns[wk])CI=Object.assign({},APP.checkIns[wk]);
@@ -1948,6 +2037,9 @@ function makeCheckinTab(){
   notesEl.addEventListener("input",function(){CI.notes=notesEl.value;});
   wrap2.appendChild(field("Issues or notes",notesEl));
   wrap2.appendChild(h("button",{class:"btn-primary",style:{width:"100%",padding:"12px",fontSize:"14px",marginTop:"4px"},onclick:function(){saveCI();}},"Save check-in"));
+  // Reminders (Web Push)
+  wrap2.appendChild(h("div",{class:"sec-label",style:{margin:"24px 0 10px"}},"Reminders"));
+  wrap2.appendChild(makePushCard());
   // Account / sign-out
   wrap2.appendChild(h("div",{class:"sec-label",style:{margin:"24px 0 10px"}},"Account"));
   if(sessionValid()){
@@ -2255,6 +2347,7 @@ function makeInput(type,val,onChange,style){
       APP.planStartDate=local.planStartDate||todayKey();
       APP.planWeeks=local.planWeeks||{};
       APP.activePlan=local.activePlan||null;
+      APP.pushSubs=local.pushSubs||{};
       APP.updatedAt=local.updatedAt||null;
       if(local.groceryState)GS=Object.assign({},local.groceryState);
       if(local.checkIns){
@@ -2269,6 +2362,7 @@ function makeInput(type,val,onChange,style){
 
   // Render immediately with local data
   render();
+  initPush();
   setSyncStatus(navigator.onLine?(!syncEnabled()?"local":(sessionValid()?"synced":"signedout")):"offline");
 
   // Then merge cloud in the background (read-only pull; merge never clobbers unsynced local edits)

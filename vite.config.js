@@ -40,6 +40,7 @@ export default defineConfig({
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
+        importScripts: ['push-sw.js'], // Web Push handlers (public/push-sw.js)
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         navigateFallbackDenylist: [/^\/rest\//], // never serve the app shell for API paths
         runtimeCaching: [

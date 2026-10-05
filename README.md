@@ -203,3 +203,19 @@ After that, every `git push` to `main` redeploys, and the service worker deliver
 installed iPhone/iPad/Mac PWAs on next open — no reinstall.
 
 To build a Pages bundle locally for inspection: `VITE_BASE=/<repo>/ npm run build`.
+
+## Reminders (Web Push)
+
+Daily reminders (morning summary, supplement stacks, lunch, snack, wind-down) are delivered as native
+notifications. On each device, install the app (iOS: Safari > Share > Add to Home Screen), open it from
+the icon, and tap **Check-In > Reminders > Turn on notifications**. Each device registers its own push
+subscription, stored in `state.pushSubs` and synced like everything else.
+
+`.github/workflows/push.yml` runs every ~5 minutes and calls `scripts/schedule-notifications.mjs --push-tick`,
+which sends whatever came due since the last run (state in `.push-sent.json` via actions/cache, so nothing
+sends twice; a reminder up to 45 min late is still sent, older ones are skipped). GitHub cron can run a few
+minutes late, so expect reminders within a few minutes of their set time. Secrets: `VAPID_PUBLIC_KEY`,
+`VAPID_PRIVATE_KEY`, `SUPABASE_SERVICE_KEY`. Send a test to every enabled device with
+`gh workflow run push.yml -f test=true`.
+
+The older ntfy job (`notify.yml`) still runs in parallel; delete it once Web Push is trusted.
