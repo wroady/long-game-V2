@@ -6,11 +6,9 @@
 // Usage:
 //   node scripts/schedule-notifications.mjs                 # live (needs SUPABASE_SERVICE_KEY env)
 //   node scripts/schedule-notifications.mjs --dry-run       # print, don't post
-//   node scripts/schedule-notifications.mjs --push-tick     # Web Push: send reminders that came due since the last tick
-//   node scripts/schedule-notifications.mjs --push-test     # Web Push: send a test notification to every device now
 //   node scripts/schedule-notifications.mjs --dry-run --state mock.json   # use a local state file
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 
 const SUPABASE_URL = 'https://jswukfohohtiwuhskyaw.supabase.co';
 const NTFY_TOPIC = process.env.NTFY_TOPIC || 'https://ntfy.sh/rodney-longgame-7x4k';
@@ -19,8 +17,6 @@ const USER_ID = 'rodney';
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
-const PUSH_TICK = args.includes('--push-tick');
-const PUSH_TEST = args.includes('--push-test');
 const stateArgIdx = args.indexOf('--state');
 const stateFile = stateArgIdx >= 0 ? args[stateArgIdx + 1] : null;
 
@@ -129,74 +125,6 @@ function buildNotifications(plan) {
   return out;
 }
 
-
-// ── Web Push (native notifications) ───────────────────────────────────────────
-// Web Push has no "deliver at 3:30" header like ntfy's At, so a frequent GitHub Actions job
-// (.github/workflows/push.yml) calls this every ~5 minutes and sends whatever came due since the
-// last run. .push-sent.json (restored/saved via actions/cache) remembers what already went to
-// which device so a reminder is never sent twice.
-const SENT_FILE = '.push-sent.json';
-const PUSH_WINDOW = 45 * 60; // a reminder still goes out up to 45 min late (cron drift); older ones are skipped as stale
-const EMOJI = { sunny: '☀️', pill: '💊', fork_and_knife: '🍴', peanuts: '🥜', crescent_moon: '🌙', memo: '📝' };
-
-async function pushMain() {
-  const state = await loadState();
-  const subs = Object.values((state && state.pushSubs) || {}).filter((r) => r && r.sub && r.sub.endpoint && !r.off);
-  console.log(`[push] ${todayKeyET()} (${TZ}) — ${subs.length} active device(s)${subs.length ? ': ' + subs.map((r) => r.label || 'device').join(', ') : ''}`);
-  if (!subs.length) return;
-
-  let send;
-  if (DRY) {
-    send = async (r, payload) => { console.log(`  [dry-run] -> ${r.label || 'device'}: ${payload.title} | ${payload.body}`); return 'ok'; };
-  } else {
-    const webpush = (await import('web-push')).default;
-    if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) throw new Error('VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set.');
-    webpush.setVapidDetails('https://wroady.github.io/long-game-V2/', process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
-    send = async (r, payload) => {
-      try { await webpush.sendNotification(r.sub, JSON.stringify(payload), { TTL: 1800, urgency: 'normal' }); return 'ok'; }
-      catch (e) { return e.statusCode ? String(e.statusCode) : 'error: ' + e.message; }
-    };
-  }
-
-  if (PUSH_TEST) {
-    for (const r of subs) {
-      const res = await send(r, { title: 'The Long Game', body: 'Test reminder — notifications are working on this device.', tag: 'tlg-test-' + Date.now() });
-      console.log(`  ${r.label || 'device'}: ${res}`);
-    }
-    return;
-  }
-
-  const plan = resolvePlan(state);
-  const notes = buildNotifications(plan);
-  notes.sort((a, b) => a.hh * 60 + a.mm - (b.hh * 60 + b.mm));
-
-  const today = todayKeyET();
-  let sent = existsSync(SENT_FILE) ? JSON.parse(readFileSync(SENT_FILE, 'utf8')) : {};
-  if (sent.date !== today) sent = { date: today, done: {} };
-  let nowEpoch = Math.floor(Date.now() / 1000);
-  if (process.env.PUSH_NOW_ET) { const [h, m] = process.env.PUSH_NOW_ET.split(':').map(Number); nowEpoch = etEpochToday(h, m) + 30; } // test hook
-
-  let changed = false;
-  for (const n of notes) {
-    const at = etEpochToday(n.hh, n.mm);
-    if (nowEpoch < at || nowEpoch > at + PUSH_WINDOW) continue;
-    const key = `${String(n.hh).padStart(2, '0')}:${String(n.mm).padStart(2, '0')} ${n.title}`;
-    const done = sent.done[key] || [];
-    const payload = { title: `${EMOJI[n.tag] || ''} ${n.title}`.trim(), body: n.body, tag: `tlg-${today}-${key.replace(/\W+/g, '-')}` };
-    for (const r of subs) {
-      const id = r.sub.endpoint.slice(-24);
-      if (done.includes(id)) continue;
-      const res = await send(r, payload);
-      console.log(`  ${key}  -> ${r.label || 'device'}: ${res === 'ok' ? 'sent' : 'FAILED ' + res}`);
-      if (res === 'ok' || res === '404' || res === '410') { done.push(id); changed = true; } // dead subscriptions (404/410) are not retried
-    }
-    sent.done[key] = done;
-  }
-  writeFileSync(SENT_FILE, JSON.stringify(sent));
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `changed=${changed}\n`);
-  if (!changed) console.log('  nothing due');
-}
-
 // ── Post to ntfy (or print) ───────────────────────────────────────────────────
 async function main() {
   const state = await loadState();
@@ -223,4 +151,4 @@ async function main() {
   }
 }
 
-(PUSH_TICK || PUSH_TEST ? pushMain() : main()).catch((e) => { console.error('schedule-notifications failed:', e.message); process.exit(1); });
+main().catch((e) => { console.error('schedule-notifications failed:', e.message); process.exit(1); });

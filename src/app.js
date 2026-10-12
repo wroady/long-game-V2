@@ -2,7 +2,7 @@
 const SUPABASE_URL="https://jswukfohohtiwuhskyaw.supabase.co";
 const SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impzd3VrZm9ob2h0aXd1aHNreWF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4NTYzMjIsImV4cCI6MjA5ODQzMjMyMn0.p9L5JtemTlaHoZ2kewIy8Y-ZDxmKSCw9RcoAtiGc_Kc";
 const NTFY="https://ntfy.sh/rodney-longgame-7x4k";
-const VAPID_PUBLIC_KEY="BHfWwn8YX7FOM7qFPXzkQh_2u3WHGwiIkK92lKPj_VhwUnAsLiQ4pG_Cpd090MGgroDBkMP0fnKBq9XXTHzJDV8"; // public half of the Web Push key pair; the private half lives only in a GitHub secret
+const VAPID_PUBLIC_KEY="BCo0RK5gNjDqjapOxw7iClXLf4aOLBRQHaiJ6IWIB3rWTf2EyQmRNzaWcUfkLsrZdhcZgjtQMAw7_rPmrLEueaE"; // public half of the Web Push key pair; the private half lives only in a GitHub secret
 const TARGETS={cal:1850,calMin:1750,calMax:1950,prot:160,water:80,fat:70,fiber:35};
 const VTHRESH={prot:10,cal:100};
 const MEALS=[
@@ -545,7 +545,8 @@ async function enablePush(){
     var perm=await Notification.requestPermission();
     if(perm!=="granted"){UI.pushMsg="Notifications are blocked for this app. Allow them in iOS Settings > Notifications > Long Game, then try again.";return;}
     var reg=await navigator.serviceWorker.ready;
-    var sub=(await reg.pushManager.getSubscription())||(await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToBytes(VAPID_PUBLIC_KEY)}));
+    var sub=await retireIfStale(await reg.pushManager.getSubscription());
+    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToBytes(VAPID_PUBLIC_KEY)});
     rememberSub(sub,false);
   }catch(e){UI.pushMsg="Couldn't turn on notifications: "+(e&&e.message?e.message:e);}
 }
@@ -557,6 +558,20 @@ async function disablePush(){
 }
 // Work out whether THIS device is currently receiving reminders (and re-register if the browser
 // dropped or rotated the subscription since we last saved it).
+function sameVapidKey(sub){
+  var k=sub.options&&sub.options.applicationServerKey;if(!k)return true;
+  var a=new Uint8Array(k),b=b64ToBytes(VAPID_PUBLIC_KEY);if(a.length!==b.length)return false;
+  for(var i=0;i<a.length;i++)if(a[i]!==b[i])return false;return true;
+}
+// A subscription made under a previous push key can never receive pushes signed with the current one:
+// record it as off and unsubscribe so a fresh one is created under the current key.
+async function retireIfStale(sub){
+  if(!sub||sameVapidKey(sub))return sub;
+  var j=sub.toJSON();
+  APP.pushSubs[sub.endpoint]={sub:{endpoint:j.endpoint,keys:j.keys},label:deviceLabel(),ts:Date.now(),off:true};
+  try{await sub.unsubscribe();}catch(e){}
+  return null;
+}
 async function refreshPushUI(){
   var on=false;
   try{
@@ -564,6 +579,7 @@ async function refreshPushUI(){
       var sub=await currentPushSub();
       var marker=null;try{marker=localStorage.getItem("tlg-push");}catch(e){}
       if(Notification.permission==="granted"&&marker==="1"){
+        sub=await retireIfStale(sub);
         if(!sub){
           var reg=await navigator.serviceWorker.ready;
           sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToBytes(VAPID_PUBLIC_KEY)});

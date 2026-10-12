@@ -211,11 +211,17 @@ notifications. On each device, install the app (iOS: Safari > Share > Add to Hom
 the icon, and tap **Check-In > Reminders > Turn on notifications**. Each device registers its own push
 subscription, stored in `state.pushSubs` and synced like everything else.
 
-`.github/workflows/push.yml` runs every ~5 minutes and calls `scripts/schedule-notifications.mjs --push-tick`,
-which sends whatever came due since the last run (state in `.push-sent.json` via actions/cache, so nothing
-sends twice; a reminder up to 45 min late is still sent, older ones are skipped). GitHub cron can run a few
-minutes late, so expect reminders within a few minutes of their set time. Secrets: `VAPID_PUBLIC_KEY`,
-`VAPID_PRIVATE_KEY`, `SUPABASE_SERVICE_KEY`. Send a test to every enabled device with
-`gh workflow run push.yml -f test=true`.
+Sending is a Supabase Edge Function, `supabase/functions/send-reminders/index.ts` (no dependencies; Web
+Push is done with Web Crypto). `pg_cron` calls it every minute via `pg_net`; it works out which reminders
+are due (America/Detroit), claims each (reminder, device) pair in the `push_sent` table so nothing is
+sent twice, and sends to every enabled device. A reminder up to 10 minutes late is still sent. Secrets
+(set in the Supabase dashboard): `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `CRON_SECRET`. The public key
+is also `VAPID_PUBLIC_KEY` in `src/app.js`; if you ever rotate the pair, update both, and each device
+re-subscribes itself the next time the app opens.
+
+Send a test to every enabled device: POST `{"test":true}` to the function with the same
+`Authorization: Bearer <anon key>` and `x-cron-secret` headers the cron uses.
+
+GitHub's scheduler was tried first and abandoned: it ran a "every 5 minutes" job only 4-6 times a day.
 
 The older ntfy job (`notify.yml`) still runs in parallel; delete it once Web Push is trusted.
