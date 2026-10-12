@@ -232,6 +232,7 @@ const EXERCISE_DEMOS={
   "knee-to-chest hold":"https://www.youtube.com/watch?v=CaaWogKAkwc",
   "child's pose + side reach":"https://www.youtube.com/watch?v=YTAwpiX2Dsg",
   "doorway chest stretch":"https://www.youtube.com/watch?v=h4M4XmCBFd8",
+  "heel routine":"https://www.youtube.com/watch?v=75JvDlvGF_s",
   // Bodyweight circuit
   "bodyweight squat":"https://www.youtube.com/watch?v=nEQQle9-0NA",
   "push-up":"https://www.youtube.com/watch?v=Zi6c09DRGxk",
