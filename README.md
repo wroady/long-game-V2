@@ -225,4 +225,9 @@ Send a test to every enabled device: POST `{"test":true}` to the function with t
 
 GitHub's scheduler was tried first and abandoned: it ran a "every 5 minutes" job only 4-6 times a day.
 
+Deploy/maintain with the Supabase CLI (`npx supabase login`, then from this folder):
+`npx supabase functions deploy send-reminders --use-api`, `npx supabase secrets set ...`,
+`npx supabase db query --linked "<sql>"`. The cron job lives in `cron.job` (`select * from cron.job`);
+`push_sent` is deliberately readable only by `service_role` (`revoke all ... from anon, authenticated`).
+
 The older ntfy job (`notify.yml`) still runs in parallel; delete it once Web Push is trusted.
