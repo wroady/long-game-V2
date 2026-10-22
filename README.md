@@ -213,7 +213,8 @@ subscription, stored in `state.pushSubs` and synced like everything else.
 
 Sending is a Supabase Edge Function, `supabase/functions/send-reminders/index.ts` (no dependencies; Web
 Push is done with Web Crypto). `pg_cron` calls it every minute via `pg_net`; it works out which reminders
-are due (America/Detroit), claims each (reminder, device) pair in the `push_sent` table so nothing is
+are due (America/Detroit), claims each (reminder, device) pair in the `push_sent` table (granted to `service_role` only, since
+Supabase no longer auto-grants API access to new tables) so nothing is
 sent twice, and sends to every enabled device. A reminder up to 10 minutes late is still sent. Secrets
 (set in the Supabase dashboard): `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `CRON_SECRET`. The public key
 is also `VAPID_PUBLIC_KEY` in `src/app.js`; if you ever rotate the pair, update both, and each device
