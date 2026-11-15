@@ -55,6 +55,14 @@ function programWeek(planStartDate, wkKey) {
 // ── Load state ────────────────────────────────────────────────────────────────
 async function loadState() {
   if (stateFile) return JSON.parse(readFileSync(stateFile, 'utf8'));
+  // Stopgap while Supabase is restricted: a reminder-only plan held in a repo secret (see make-stopgap-plan.mjs).
+  // Used only if it covers the current week; otherwise fall through to Supabase.
+  if (process.env.STOPGAP_PLAN) {
+    try {
+      const s = JSON.parse(process.env.STOPGAP_PLAN);
+      if (s.planWeeks && s.planWeeks[weekSundayKey()]) return s;
+    } catch (e) { console.error('STOPGAP_PLAN unreadable:', e.message); }
+  }
   const key = process.env.SUPABASE_SERVICE_KEY;
   if (!key) throw new Error('SUPABASE_SERVICE_KEY not set (needed to read the RLS-locked row).');
   const r = await fetch(`${SUPABASE_URL}/rest/v1/app_sync?user_id=eq.${USER_ID}&select=state`, { headers: { apikey: key, Authorization: `Bearer ${key}` } });
