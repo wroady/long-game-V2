@@ -220,6 +220,12 @@ sent twice, and sends to every enabled device. A reminder up to 10 minutes late 
 is also `VAPID_PUBLIC_KEY` in `src/app.js`; if you ever rotate the pair, update both, and each device
 re-subscribes itself the next time the app opens.
 
+Egress matters on the free plan (5 GB/month): the app's synced state is one ~900 KB row, so the function
+must never download it. It reads `rpc/reminder_inputs` (a few KB; a SQL function in
+`supabase/migrations/`) instead. An earlier version re-downloaded the whole row every minute (~39 GB/month)
+and got the project restricted (HTTP 402, `exceed_egress_quota`). A cron job trims `cron.job_run_details`
+daily. Tests: `node supabase/functions/send-reminders/index.test.mjs`.
+
 Send a test to every enabled device: POST `{"test":true}` to the function with the same
 `Authorization: Bearer <anon key>` and `x-cron-secret` headers the cron uses.
 

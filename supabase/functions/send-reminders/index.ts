@@ -1,6 +1,6 @@
 // Sends The Long Game's daily reminders as Web Push notifications.
 // Runs every minute (pg_cron -> pg_net -> this function). For each reminder that is due, it sends to
-// every device that turned reminders on (state.pushSubs in the app_sync row), claiming each
+// every device that turned reminders on (pushSubs in the app_sync state, read via reminder_inputs()), claiming each
 // (reminder, device) pair in the push_sent table first so nothing is ever sent twice.
 // No dependencies: Web Push (RFC 8291 encryption + RFC 8292 VAPID) is done with standard Web Crypto.
 //
@@ -176,10 +176,17 @@ async function handle(req: Request) {
   const H = { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
   const pub = env("VAPID_PUBLIC_KEY"), priv = env("VAPID_PRIVATE_KEY");
 
-  const r = await fetch(`${base}/app_sync?user_id=eq.${USER_ID}&select=state`, { headers: H });
-  if (!r.ok) return new Response("state read failed: " + r.status, { status: 500 });
-  const rows = await r.json();
-  const state = rows?.[0]?.state;
+  // Not the whole synced state (~900 KB, which used ~39 GB/month of egress at one read a minute): the
+  // reminder_inputs() database function returns just what reminders need, a few KB.
+  const r = await fetch(`${base}/rpc/reminder_inputs`, { method: "POST", headers: H, body: JSON.stringify({ wk: weekSundayKey(Date.now()) }) });
+  if (!r.ok) return new Response("state read failed: " + r.status, { status: r.status === 402 ? 402 : 500 });
+  const inputs = await r.json();
+  const state = inputs && {
+    pushSubs: inputs.pushSubs,
+    planStartDate: inputs.planStartDate,
+    planWeeks: inputs.frozen ? { [weekSundayKey(Date.now())]: inputs.plan } : {},
+    activePlan: inputs.frozen ? null : inputs.plan,
+  };
   const body = await req.json().catch(() => ({}));
   const log: string[] = [];
 
